@@ -43,11 +43,18 @@ def init_memory_table():
             session_id  TEXT,
             metadata    TEXT DEFAULT '{}',
             embedding   BLOB NOT NULL,
+            user_id     TEXT,
             created_at  TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_type ON memory_vectors(chunk_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_topic ON memory_vectors(topic)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_user ON memory_vectors(user_id)")
+    # Migrate: add user_id if missing
+    try:
+        conn.execute("SELECT user_id FROM memory_vectors LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE memory_vectors ADD COLUMN user_id TEXT")
     conn.commit()
     conn.close()
     logger.info("memory_vectors table ready.")
@@ -98,6 +105,7 @@ def index_session_memory(
     topic: str | None,
     summary: str,
     weak_points: list[dict],
+    user_id: str,
     strong_points: list[dict] | None = None,
     insight_text: str = "",
 ):
@@ -130,8 +138,9 @@ def index_session_memory(
     for (chunk_type, content, t, sid, meta), vec in zip(chunks, vectors):
         blob = _serialize(np.array(vec, dtype=np.float32))
         conn.execute(
-            "INSERT INTO memory_vectors (chunk_type, content, topic, session_id, metadata, embedding, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (chunk_type, content, t, sid, meta, blob, now),
+            "INSERT INTO memory_vectors (chunk_type, content, topic, session_id, metadata, embedding, user_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (chunk_type, content, t, sid, meta, blob, user_id, now),
         )
 
     conn.commit()
@@ -143,6 +152,7 @@ def index_session_memory(
 
 def search_memory(
     query: str,
+    user_id: str,
     chunk_types: list[str] | None = None,
     topic: str | None = None,
     top_k: int = 5,
@@ -151,8 +161,8 @@ def search_memory(
     conn = _get_conn()
 
     # Build filter query
-    where = []
-    params = []
+    where = ["user_id = ?"]
+    params: list = [user_id]
     if chunk_types:
         placeholders = ",".join("?" for _ in chunk_types)
         where.append(f"chunk_type IN ({placeholders})")
@@ -161,7 +171,7 @@ def search_memory(
         where.append("topic = ?")
         params.append(topic)
 
-    where_clause = (" WHERE " + " AND ".join(where)) if where else ""
+    where_clause = " WHERE " + " AND ".join(where)
     rows = conn.execute(
         f"SELECT id, chunk_type, content, topic, session_id, embedding, created_at FROM memory_vectors{where_clause}",
         params,
@@ -199,6 +209,7 @@ def search_memory(
 def find_similar_weak_point(
     new_point: str,
     existing_points: list[dict],
+    user_id: str,
     threshold: float = SIMILARITY_THRESHOLD,
 ) -> int | None:
     """Find index of most similar existing weak point via embedding similarity.
@@ -208,7 +219,8 @@ def find_similar_weak_point(
 
     conn = _get_conn()
     rows = conn.execute(
-        "SELECT content, embedding FROM memory_vectors WHERE chunk_type = 'weak_point'"
+        "SELECT content, embedding FROM memory_vectors WHERE chunk_type = 'weak_point' AND user_id = ?",
+        (user_id,),
     ).fetchall()
     conn.close()
 
@@ -258,15 +270,15 @@ def find_similar_weak_point(
 
 # ── Maintenance ──
 
-def rebuild_index_from_profile():
+def rebuild_index_from_profile(user_id: str):
     """Rebuild weak_point vectors from current profile.json."""
     from backend.memory import _load_profile
 
     conn = _get_conn()
-    conn.execute("DELETE FROM memory_vectors WHERE chunk_type = 'weak_point'")
+    conn.execute("DELETE FROM memory_vectors WHERE chunk_type = 'weak_point' AND user_id = ?", (user_id,))
     conn.commit()
 
-    profile = _load_profile()
+    profile = _load_profile(user_id)
     weak_points = profile.get("weak_points", [])
 
     if not weak_points:
@@ -286,10 +298,11 @@ def rebuild_index_from_profile():
         blob = _serialize(np.array(vec, dtype=np.float32))
         meta = json.dumps({"topic": wp.get("topic", ""), "times_seen": wp.get("times_seen", 1)})
         conn.execute(
-            "INSERT INTO memory_vectors (chunk_type, content, topic, metadata, embedding, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("weak_point", text, wp.get("topic"), meta, blob, wp.get("first_seen", now)),
+            "INSERT INTO memory_vectors (chunk_type, content, topic, metadata, embedding, user_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("weak_point", text, wp.get("topic"), meta, blob, user_id, wp.get("first_seen", now)),
         )
 
     conn.commit()
     conn.close()
-    logger.info(f"Rebuilt {len(texts)} weak_point vectors from profile.json.")
+    logger.info(f"Rebuilt {len(texts)} weak_point vectors for user {user_id}.")

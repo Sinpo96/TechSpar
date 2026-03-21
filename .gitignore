@@ -8,8 +8,10 @@ __pycache__/
 # Node
 frontend/node_modules/
 frontend/dist/
+demo_imges/
 
 # User data (personal, not for sharing)
+data/users/
 data/resume/*
 data/user_profile/*
 data/user_profile/insights/*

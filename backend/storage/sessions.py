@@ -24,12 +24,13 @@ def _get_conn() -> sqlite3.Connection:
             weak_points TEXT DEFAULT '[]',
             overall TEXT DEFAULT '{}',
             review TEXT,
+            user_id TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     # Migrate: add columns if missing (existing DBs)
-    for col, default in [("questions", "'[]'"), ("overall", "'{}'")]:
+    for col, default in [("questions", "'[]'"), ("overall", "'{}'"), ("user_id", "NULL")]:
         try:
             conn.execute(f"SELECT {col} FROM sessions LIMIT 1")
         except sqlite3.OperationalError:
@@ -38,36 +39,43 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
-def create_session(session_id: str, mode: str, topic: str | None = None, questions: list | None = None):
+def create_session(session_id: str, mode: str, topic: str | None = None,
+                   questions: list | None = None, *, user_id: str):
     conn = _get_conn()
     conn.execute(
-        "INSERT INTO sessions (session_id, mode, topic, questions) VALUES (?, ?, ?, ?)",
-        (session_id, mode, topic, json.dumps(questions or [], ensure_ascii=False)),
+        "INSERT INTO sessions (session_id, mode, topic, questions, user_id) VALUES (?, ?, ?, ?, ?)",
+        (session_id, mode, topic, json.dumps(questions or [], ensure_ascii=False), user_id),
     )
     conn.commit()
     conn.close()
 
 
-def append_message(session_id: str, role: str, content: str):
+def append_message(session_id: str, role: str, content: str, *, user_id: str):
     conn = _get_conn()
-    row = conn.execute("SELECT transcript FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    row = conn.execute(
+        "SELECT transcript FROM sessions WHERE session_id = ? AND user_id = ?",
+        (session_id, user_id),
+    ).fetchone()
     if not row:
         conn.close()
         return
     transcript = json.loads(row["transcript"])
     transcript.append({"role": role, "content": content, "time": datetime.now().isoformat()})
     conn.execute(
-        "UPDATE sessions SET transcript = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
-        (json.dumps(transcript, ensure_ascii=False), session_id),
+        "UPDATE sessions SET transcript = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ? AND user_id = ?",
+        (json.dumps(transcript, ensure_ascii=False), session_id, user_id),
     )
     conn.commit()
     conn.close()
 
 
-def save_drill_answers(session_id: str, answers: list[dict]):
+def save_drill_answers(session_id: str, answers: list[dict], *, user_id: str):
     """Save drill answers into transcript as Q&A pairs."""
     conn = _get_conn()
-    row = conn.execute("SELECT questions FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    row = conn.execute(
+        "SELECT questions FROM sessions WHERE session_id = ? AND user_id = ?",
+        (session_id, user_id),
+    ).fetchone()
     if not row:
         conn.close()
         return
@@ -82,26 +90,34 @@ def save_drill_answers(session_id: str, answers: list[dict]):
             transcript.append({"role": "user", "content": answer, "time": datetime.now().isoformat()})
 
     conn.execute(
-        "UPDATE sessions SET transcript = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
-        (json.dumps(transcript, ensure_ascii=False), session_id),
+        "UPDATE sessions SET transcript = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ? AND user_id = ?",
+        (json.dumps(transcript, ensure_ascii=False), session_id, user_id),
     )
     conn.commit()
     conn.close()
 
 
-def save_review(session_id: str, review: str, scores: list = None, weak_points: list = None, overall: dict = None):
+def save_review(session_id: str, review: str, scores: list = None,
+                weak_points: list = None, overall: dict = None, *, user_id: str):
     conn = _get_conn()
     conn.execute(
-        "UPDATE sessions SET review = ?, scores = ?, weak_points = ?, overall = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
-        (review, json.dumps(scores or [], ensure_ascii=False), json.dumps(weak_points or [], ensure_ascii=False), json.dumps(overall or {}, ensure_ascii=False), session_id),
+        "UPDATE sessions SET review = ?, scores = ?, weak_points = ?, overall = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE session_id = ? AND user_id = ?",
+        (review, json.dumps(scores or [], ensure_ascii=False),
+         json.dumps(weak_points or [], ensure_ascii=False),
+         json.dumps(overall or {}, ensure_ascii=False),
+         session_id, user_id),
     )
     conn.commit()
     conn.close()
 
 
-def get_session(session_id: str) -> dict | None:
+def get_session(session_id: str, *, user_id: str) -> dict | None:
     conn = _get_conn()
-    row = conn.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM sessions WHERE session_id = ? AND user_id = ?",
+        (session_id, user_id),
+    ).fetchone()
     conn.close()
     if not row:
         return None
@@ -114,12 +130,13 @@ def get_session(session_id: str) -> dict | None:
     return result
 
 
-def list_sessions_by_topic(topic: str, limit: int = 50) -> list[dict]:
+def list_sessions_by_topic(topic: str, *, user_id: str, limit: int = 50) -> list[dict]:
     """Get all sessions for a topic with reviews and scores."""
     conn = _get_conn()
     rows = conn.execute(
-        "SELECT session_id, mode, topic, review, scores, created_at FROM sessions WHERE topic = ? AND review IS NOT NULL ORDER BY created_at ASC LIMIT ?",
-        (topic, limit),
+        "SELECT session_id, mode, topic, review, scores, created_at FROM sessions "
+        "WHERE topic = ? AND user_id = ? AND review IS NOT NULL ORDER BY created_at ASC LIMIT ?",
+        (topic, user_id, limit),
     ).fetchall()
     conn.close()
     results = []
@@ -134,6 +151,7 @@ def list_sessions_by_topic(topic: str, limit: int = 50) -> list[dict]:
 
 
 def list_sessions(
+    *, user_id: str,
     limit: int = 20,
     offset: int = 0,
     mode: str | None = None,
@@ -141,8 +159,8 @@ def list_sessions(
 ) -> dict:
     conn = _get_conn()
 
-    where = ["review IS NOT NULL"]
-    params: list = []
+    where = ["review IS NOT NULL", "user_id = ?"]
+    params: list = [user_id]
     if mode:
         where.append("mode = ?")
         params.append(mode)
@@ -156,7 +174,8 @@ def list_sessions(
     ).fetchone()[0]
 
     rows = conn.execute(
-        f"SELECT session_id, mode, topic, created_at, overall FROM sessions WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        f"SELECT session_id, mode, topic, created_at, overall FROM sessions "
+        f"WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
         params + [limit, offset],
     ).fetchall()
     conn.close()
@@ -174,18 +193,23 @@ def list_sessions(
     return {"items": items, "total": total}
 
 
-def delete_session(session_id: str) -> bool:
+def delete_session(session_id: str, *, user_id: str) -> bool:
     conn = _get_conn()
-    cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+    cursor = conn.execute(
+        "DELETE FROM sessions WHERE session_id = ? AND user_id = ?",
+        (session_id, user_id),
+    )
     conn.commit()
     conn.close()
     return cursor.rowcount > 0
 
 
-def list_distinct_topics() -> list[str]:
+def list_distinct_topics(*, user_id: str) -> list[str]:
     conn = _get_conn()
     rows = conn.execute(
-        "SELECT DISTINCT topic FROM sessions WHERE topic IS NOT NULL AND review IS NOT NULL ORDER BY topic",
+        "SELECT DISTINCT topic FROM sessions "
+        "WHERE topic IS NOT NULL AND review IS NOT NULL AND user_id = ? ORDER BY topic",
+        (user_id,),
     ).fetchall()
     conn.close()
     return [r["topic"] for r in rows]

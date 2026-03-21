@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Sun, Moon, Menu, X } from "lucide-react";
+import { Sun, Moon, Menu, X, LogOut } from "lucide-react";
+import { useAuth } from "../contexts/AuthContext";
 
 const NAV_ITEMS = [
   { path: "/", label: "首页" },
@@ -13,6 +14,7 @@ const NAV_ITEMS = [
 export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, logout } = useAuth();
   const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "dark");
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -27,6 +29,11 @@ export default function Header() {
 
   const toggleTheme = () => setTheme(t => t === "dark" ? "light" : "dark");
   const isActive = (path) => location.pathname === path;
+
+  const handleLogout = () => {
+    logout();
+    navigate("/login", { replace: true });
+  };
 
   return (
     <header className="flex items-center justify-between px-4 md:px-6 py-4 border-b border-border bg-card relative">
@@ -56,6 +63,19 @@ export default function Header() {
         >
           {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
         </button>
+
+        {/* User menu */}
+        {user && (
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-dim
+                       hover:text-text hover:bg-hover transition-all ml-1"
+            title="退出登录"
+          >
+            <span className="max-w-[100px] truncate">{user.name || user.email}</span>
+            <LogOut size={15} />
+          </button>
+        )}
       </nav>
 
       {/* Mobile: theme + hamburger */}
@@ -89,6 +109,16 @@ export default function Header() {
               {label}
             </button>
           ))}
+          {user && (
+            <button
+              className="px-6 py-3 text-left text-sm text-dim hover:bg-hover hover:text-text transition-all
+                         flex items-center gap-2 border-t border-border mt-1 pt-3"
+              onClick={handleLogout}
+            >
+              <LogOut size={15} />
+              退出登录 ({user.name || user.email})
+            </button>
+          )}
         </nav>
       )}
     </header>

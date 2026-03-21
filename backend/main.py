@@ -2,22 +2,22 @@
 import uuid
 from datetime import datetime
 
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage, AIMessage
 
 from backend.models import (
     StartInterviewRequest, ChatRequest, EndDrillRequest,
-    RecordingAnalyzeRequest,
+    RecordingAnalyzeRequest, RegisterRequest, LoginRequest,
     InterviewMode, InterviewPhase,
 )
 from backend.graphs.resume_interview import compile_resume_interview
 from backend.graphs.topic_drill import (
-    generate_drill_questions, evaluate_drill_answers, TOPIC_DISPLAY,
+    generate_drill_questions, evaluate_drill_answers,
 )
 from backend.graphs.review import generate_review
 from backend.config import settings
-from backend.indexer import TOPIC_MAP, load_topics, save_topics, _index_cache
+from backend.indexer import load_topics, save_topics, _index_cache
 from backend.memory import get_profile, update_profile_after_interview, llm_update_profile
 from backend.storage.sessions import (
     create_session, append_message, save_review, save_drill_answers,
@@ -25,8 +25,12 @@ from backend.storage.sessions import (
     delete_session, list_distinct_topics,
 )
 from backend.graph import build_graph
+from backend.auth import (
+    init_users_table, ensure_default_user,
+    create_user, authenticate_user, create_token, get_current_user,
+)
 
-app = FastAPI(title="TechSpar", version="0.1.0")
+app = FastAPI(title="TechSpar", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,7 +52,7 @@ def preload_models():
     """Pre-load bge-m3 embedding model + init vector memory on startup."""
     from backend.llm_provider import get_embedding, get_llama_llm
     from backend.indexer import _init_llama_settings
-    from backend.vector_memory import init_memory_table, rebuild_index_from_profile
+    from backend.vector_memory import init_memory_table
     import logging
     logger = logging.getLogger("uvicorn")
     logger.info("Pre-loading bge-m3 embedding model...")
@@ -56,24 +60,48 @@ def preload_models():
     _init_llama_settings()
     logger.info("Embedding model ready.")
 
-    # Init vector memory table and backfill from existing profile
+    # Init tables + default user
     init_memory_table()
-    try:
-        rebuild_index_from_profile()
-    except Exception as e:
-        logger.warning(f"Profile backfill skipped: {e}")
-    logger.info("Vector memory initialized.")
+    init_users_table()
+    ensure_default_user()
+    logger.info("Database tables initialized.")
+
+
+# ── Auth endpoints (no authentication required) ──
+
+@router.get("/auth/config")
+def auth_config():
+    """Public endpoint — tells the frontend whether registration is enabled."""
+    return {"allow_registration": settings.allow_registration}
+
+
+@router.post("/auth/register")
+def register(req: RegisterRequest):
+    user = create_user(req.email, req.password, req.name)
+    token = create_token(user["id"])
+    return {"token": token, "user": user}
+
+
+@router.post("/auth/login")
+def login(req: LoginRequest):
+    user = authenticate_user(req.email, req.password)
+    if not user:
+        raise HTTPException(401, "Invalid email or password")
+    token = create_token(user["id"])
+    return {"token": token, "user": user}
 
 
 @router.get("/")
 def root():
-    return {"service": "TechSpar", "version": "0.1.0"}
+    return {"service": "TechSpar", "version": "0.2.0"}
 
+
+# ── Resume ──
 
 @router.get("/resume/status")
-def resume_status():
+def resume_status(user_id: str = Depends(get_current_user)):
     """Check if a resume file exists."""
-    resume_dir = settings.resume_path
+    resume_dir = settings.user_resume_path(user_id)
     if not resume_dir.exists():
         return {"has_resume": False}
     files = [f for f in resume_dir.iterdir() if f.suffix.lower() == ".pdf"]
@@ -84,12 +112,12 @@ def resume_status():
 
 
 @router.post("/resume/upload")
-async def upload_resume(file: UploadFile = File(...)):
+async def upload_resume(file: UploadFile = File(...), user_id: str = Depends(get_current_user)):
     """Upload a resume PDF. Replaces any existing resume."""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are supported.")
 
-    resume_dir = settings.resume_path
+    resume_dir = settings.user_resume_path(user_id)
     resume_dir.mkdir(parents=True, exist_ok=True)
 
     # Remove old resumes
@@ -103,8 +131,8 @@ async def upload_resume(file: UploadFile = File(...)):
     dest.write_bytes(content)
 
     # Clear index cache so next query rebuilds from new resume
-    _index_cache.pop("resume", None)
-    cache_dir = settings.base_dir / "data" / ".index_cache" / "resume"
+    _index_cache.pop((user_id, "resume"), None)
+    cache_dir = settings.user_index_cache_path(user_id) / "resume"
     if cache_dir.exists():
         import shutil
         shutil.rmtree(cache_dir)
@@ -115,7 +143,7 @@ async def upload_resume(file: UploadFile = File(...)):
 # ── Speech-to-text ──
 
 @router.post("/transcribe")
-async def transcribe(file: UploadFile = File(...)):
+async def transcribe(file: UploadFile = File(...), user_id: str = Depends(get_current_user)):
     """Transcribe short audio clip to text via DashScope ASR."""
     audio_bytes = await file.read()
     if not audio_bytes:
@@ -136,8 +164,9 @@ async def transcribe(file: UploadFile = File(...)):
 async def recording_transcribe(
     file: UploadFile = File(...),
     mode: str = Form("dual"),
+    user_id: str = Depends(get_current_user),
 ):
-    """Transcribe recording audio via DashScope ASR. Speaker identification handled by LLM later."""
+    """Transcribe recording audio via DashScope ASR."""
     audio_bytes = await file.read()
     if not audio_bytes:
         raise HTTPException(400, "Empty audio file.")
@@ -153,17 +182,17 @@ async def recording_transcribe(
 
 
 @router.post("/recording/analyze")
-async def recording_analyze(req: RecordingAnalyzeRequest):
+async def recording_analyze(req: RecordingAnalyzeRequest, user_id: str = Depends(get_current_user)):
     """Analyze a recording transcript — dual mode extracts Q&A, solo mode does holistic eval."""
     session_id = str(uuid.uuid4())
 
     if req.recording_mode == "dual":
-        return await _analyze_dual(req, session_id)
+        return await _analyze_dual(req, session_id, user_id)
     else:
-        return await _analyze_solo(req, session_id)
+        return await _analyze_solo(req, session_id, user_id)
 
 
-async def _analyze_dual(req: RecordingAnalyzeRequest, session_id: str):
+async def _analyze_dual(req: RecordingAnalyzeRequest, session_id: str, user_id: str):
     """Dual mode: structure transcript into Q&A → evaluate → update profile."""
     from backend.graphs.topic_drill import _parse_json_response
     from backend.llm_provider import get_langchain_llm
@@ -207,7 +236,7 @@ async def _analyze_dual(req: RecordingAnalyzeRequest, session_id: str):
         })
 
     # Create session
-    create_session(session_id, mode="recording", questions=questions)
+    create_session(session_id, mode="recording", questions=questions, user_id=user_id)
 
     # Step 2: Evaluate Q&A pairs (recording-specific prompt, no topic binding)
     qa_lines = []
@@ -238,11 +267,11 @@ async def _analyze_dual(req: RecordingAnalyzeRequest, session_id: str):
 
     # Step 3: Format review + save
     review = _format_drill_review(questions, answers, scores, overall)
-    save_drill_answers(session_id, answers)
-    save_review(session_id, review, scores, overall.get("new_weak_points", []), overall)
+    save_drill_answers(session_id, answers, user_id=user_id)
+    save_review(session_id, review, scores, overall.get("new_weak_points", []), overall, user_id=user_id)
 
     # Step 4: Update profile (topic=None, weak/strong points carry their own topic)
-    await _update_recording_profile(overall, scores, len(questions))
+    await _update_recording_profile(overall, scores, len(questions), user_id)
 
     return {
         "session_id": session_id,
@@ -256,14 +285,14 @@ async def _analyze_dual(req: RecordingAnalyzeRequest, session_id: str):
     }
 
 
-async def _analyze_solo(req: RecordingAnalyzeRequest, session_id: str):
+async def _analyze_solo(req: RecordingAnalyzeRequest, session_id: str, user_id: str):
     """Solo mode: holistic evaluation of candidate's technical expression."""
     from backend.graphs.topic_drill import _parse_json_response
     from backend.llm_provider import get_langchain_llm
     from backend.prompts.recording import RECORDING_SOLO_EVAL_PROMPT
     from langchain_core.messages import SystemMessage
 
-    create_session(session_id, mode="recording")
+    create_session(session_id, mode="recording", user_id=user_id)
 
     llm = get_langchain_llm()
     eval_prompt = RECORDING_SOLO_EVAL_PROMPT.format(
@@ -292,10 +321,10 @@ async def _analyze_solo(req: RecordingAnalyzeRequest, session_id: str):
     ]
 
     # Save to DB
-    save_review(session_id, review, scores, overall.get("new_weak_points", []), overall)
+    save_review(session_id, review, scores, overall.get("new_weak_points", []), overall, user_id=user_id)
 
     # Update profile (topic=None, points carry their own topic labels)
-    await _update_recording_profile(overall, scores, max(len(topics_covered), 1))
+    await _update_recording_profile(overall, scores, max(len(topics_covered), 1), user_id)
 
     return {
         "session_id": session_id,
@@ -307,7 +336,7 @@ async def _analyze_solo(req: RecordingAnalyzeRequest, session_id: str):
     }
 
 
-async def _update_recording_profile(overall: dict, scores: list, total_items: int = 1):
+async def _update_recording_profile(overall: dict, scores: list, total_items: int, user_id: str):
     """Update profile from recording analysis — no single topic, points carry their own topic."""
     valid = []
     for s in scores:
@@ -323,6 +352,7 @@ async def _update_recording_profile(overall: dict, scores: list, total_items: in
         new_strong_points=overall.get("new_strong_points", []),
         topic_mastery={},
         communication=overall.get("communication_observations", {}),
+        user_id=user_id,
         thinking_patterns=overall.get("thinking_patterns"),
         session_summary=overall.get("summary", ""),
         avg_score=overall.get("avg_score"),
@@ -363,14 +393,16 @@ def _format_solo_review(topics_covered: list, overall: dict) -> str:
     return "\n".join(lines)
 
 
+# ── Topics ──
+
 @router.get("/topics")
-def get_topics():
+def get_topics(user_id: str = Depends(get_current_user)):
     """List available drill topics (with name and icon)."""
-    return load_topics()
+    return load_topics(user_id)
 
 
 @router.post("/topics")
-def create_topic(body: dict):
+def create_topic(body: dict, user_id: str = Depends(get_current_user)):
     """Add a new topic."""
     key = body.get("key", "").strip()
     name = body.get("name", "").strip()
@@ -378,16 +410,16 @@ def create_topic(body: dict):
     if not key or not name:
         raise HTTPException(400, "key and name are required")
 
-    topics = load_topics()
+    topics = load_topics(user_id)
     if key in topics:
         raise HTTPException(409, f"Topic '{key}' already exists")
 
     dir_name = body.get("dir", key).strip()
     topics[key] = {"name": name, "icon": icon, "dir": dir_name}
-    save_topics(topics)
+    save_topics(topics, user_id)
 
     # Create knowledge directory with README
-    topic_dir = settings.knowledge_path / dir_name
+    topic_dir = settings.user_knowledge_path(user_id) / dir_name
     topic_dir.mkdir(parents=True, exist_ok=True)
     readme = topic_dir / "README.md"
     if not readme.exists():
@@ -397,58 +429,59 @@ def create_topic(body: dict):
 
 
 @router.delete("/topics/{key}")
-def delete_topic(key: str):
+def delete_topic(key: str, user_id: str = Depends(get_current_user)):
     """Remove a topic."""
-    topics = load_topics()
+    topics = load_topics(user_id)
     if key not in topics:
         raise HTTPException(404, f"Topic '{key}' not found")
 
     del topics[key]
-    save_topics(topics)
+    save_topics(topics, user_id)
 
     # Clear index cache
-    from backend.indexer import _index_cache
-    _index_cache.pop(key, None)
+    _index_cache.pop((user_id, key), None)
 
     return {"ok": True}
 
 
+# ── Profile ──
+
 @router.get("/profile")
-def get_user_profile():
+def get_user_profile(user_id: str = Depends(get_current_user)):
     """Get the user's accumulated interview profile."""
-    return get_profile()
+    return get_profile(user_id)
 
 
 @router.get("/profile/due-reviews")
-def get_due_reviews(topic: str = None):
+def get_due_reviews_endpoint(topic: str = None, user_id: str = Depends(get_current_user)):
     """Get weak points due for spaced repetition review."""
     from backend.spaced_repetition import get_due_reviews as _get_due
-    return _get_due(topic)
+    return _get_due(user_id, topic)
 
 
 @router.get("/profile/topic/{topic}/history")
-def get_topic_history(topic: str):
+def get_topic_history(topic: str, user_id: str = Depends(get_current_user)):
     """Get session history for a specific topic."""
-    sessions = list_sessions_by_topic(topic)
+    sessions = list_sessions_by_topic(topic, user_id=user_id)
     return sessions
 
 
 @router.post("/profile/topic/{topic}/retrospective")
-async def generate_retrospective(topic: str):
+async def generate_retrospective(topic: str, user_id: str = Depends(get_current_user)):
     """Generate a comprehensive retrospective for a topic based on all past sessions."""
     from backend.prompts.interviewer import TOPIC_RETROSPECTIVE_PROMPT
     from backend.memory import _load_profile, _save_profile
     from backend.llm_provider import get_langchain_llm
-    from backend.graphs.topic_drill import TOPIC_DISPLAY
     from langchain_core.messages import SystemMessage, HumanMessage
 
     # Gather all sessions for this topic
-    sessions = list_sessions_by_topic(topic)
+    sessions = list_sessions_by_topic(topic, user_id=user_id)
     if not sessions:
         raise HTTPException(400, "该领域暂无训练记录")
 
-    profile = _load_profile()
-    topic_name = TOPIC_DISPLAY.get(topic, topic)
+    profile = _load_profile(user_id)
+    topic_display = {k: v["name"] for k, v in load_topics(user_id).items()}
+    topic_name = topic_display.get(topic, topic)
     mastery = profile.get("topic_mastery", {}).get(topic, {})
 
     # Format session history — only include answered questions
@@ -497,7 +530,7 @@ async def generate_retrospective(topic: str):
     # Cache in profile
     profile.setdefault("topic_mastery", {}).setdefault(topic, {})["retrospective"] = retrospective
     profile["topic_mastery"][topic]["retrospective_at"] = datetime.now().isoformat()
-    _save_profile(profile)
+    _save_profile(profile, user_id)
 
     return {
         "topic": topic,
@@ -507,22 +540,25 @@ async def generate_retrospective(topic: str):
     }
 
 
+# ── Interview ──
+
 @router.post("/interview/start")
-async def start_interview(req: StartInterviewRequest):
+async def start_interview(req: StartInterviewRequest, user_id: str = Depends(get_current_user)):
     """Start a new interview session."""
     session_id = str(uuid.uuid4())[:8]
 
     if req.mode == InterviewMode.TOPIC_DRILL:
         # ── Drill mode: generate 10 questions upfront ──
-        if not req.topic or req.topic not in TOPIC_MAP:
-            raise HTTPException(400, f"Invalid topic. Available: {list(TOPIC_MAP.keys())}")
+        topics = load_topics(user_id)
+        if not req.topic or req.topic not in topics:
+            raise HTTPException(400, f"Invalid topic. Available: {list(topics.keys())}")
 
         try:
-            questions = generate_drill_questions(req.topic)
+            questions = generate_drill_questions(req.topic, user_id)
         except RuntimeError as e:
             raise HTTPException(500, str(e))
-        create_session(session_id, req.mode.value, req.topic, questions=questions)
-        _drill_sessions[session_id] = {"topic": req.topic, "questions": questions}
+        create_session(session_id, req.mode.value, req.topic, questions=questions, user_id=user_id)
+        _drill_sessions[session_id] = {"topic": req.topic, "questions": questions, "user_id": user_id}
 
         return {
             "session_id": session_id,
@@ -532,7 +568,7 @@ async def start_interview(req: StartInterviewRequest):
         }
     else:
         # ── Resume mode: LangGraph interactive interview ──
-        graph = compile_resume_interview()
+        graph = compile_resume_interview(user_id)
         initial_state = {}
         config = {"configurable": {"thread_id": session_id}}
 
@@ -544,9 +580,13 @@ async def start_interview(req: StartInterviewRequest):
                 ai_message = msg.content
                 break
 
-        create_session(session_id, req.mode.value, req.topic)
-        append_message(session_id, "assistant", ai_message)
-        _graphs[session_id] = {"graph": graph, "config": config, "mode": req.mode, "topic": req.topic}
+        create_session(session_id, req.mode.value, req.topic, user_id=user_id)
+        append_message(session_id, "assistant", ai_message, user_id=user_id)
+        _graphs[session_id] = {
+            "graph": graph, "config": config,
+            "mode": req.mode, "topic": req.topic,
+            "user_id": user_id,
+        }
 
         return {
             "session_id": session_id,
@@ -557,12 +597,15 @@ async def start_interview(req: StartInterviewRequest):
 
 
 @router.post("/interview/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
     """Send user answer, get next interviewer response (resume mode only)."""
     if req.session_id not in _graphs:
         raise HTTPException(404, "Session not found. It may have expired (in-memory only).")
 
     entry = _graphs[req.session_id]
+    if entry.get("user_id") != user_id:
+        raise HTTPException(403, "Access denied.")
+
     graph = entry["graph"]
     config = entry["config"]
 
@@ -571,7 +614,7 @@ async def chat(req: ChatRequest):
         config,
     )
 
-    append_message(req.session_id, "user", req.message)
+    append_message(req.session_id, "user", req.message, user_id=user_id)
 
     is_finished = False
     if isinstance(result, dict):
@@ -586,7 +629,7 @@ async def chat(req: ChatRequest):
             ai_message = msg.content
             break
 
-    append_message(req.session_id, "assistant", ai_message)
+    append_message(req.session_id, "assistant", ai_message, user_id=user_id)
 
     return {
         "session_id": req.session_id,
@@ -596,21 +639,25 @@ async def chat(req: ChatRequest):
 
 
 @router.post("/interview/end/{session_id}")
-async def end_interview(session_id: str, body: EndDrillRequest = None):
+async def end_interview(session_id: str, body: EndDrillRequest = None,
+                        user_id: str = Depends(get_current_user)):
     """End interview → evaluate → generate review → update profile."""
 
     # ── Drill mode: batch evaluate ──
     if session_id in _drill_sessions:
         entry = _drill_sessions[session_id]
+        if entry.get("user_id") != user_id:
+            raise HTTPException(403, "Access denied.")
+
         topic = entry["topic"]
         questions = entry["questions"]
         answers = body.answers if body and body.answers else []
 
         # Save answers to SQLite
-        save_drill_answers(session_id, answers)
+        save_drill_answers(session_id, answers, user_id=user_id)
 
         # Batch evaluate (1 LLM call)
-        eval_result = evaluate_drill_answers(topic, questions, answers)
+        eval_result = evaluate_drill_answers(topic, questions, answers, user_id)
         scores = eval_result.get("scores", [])
         overall = eval_result.get("overall", {})
 
@@ -623,7 +670,7 @@ async def end_interview(session_id: str, body: EndDrillRequest = None):
         review = _format_drill_review(questions, answers, scores, overall)
 
         # Save to SQLite
-        save_review(session_id, review, scores, overall.get("new_weak_points", []), overall)
+        save_review(session_id, review, scores, overall.get("new_weak_points", []), overall, user_id=user_id)
 
         # Update spaced repetition state for evaluated weak points
         from backend.spaced_repetition import update_weak_point_sr
@@ -631,10 +678,10 @@ async def end_interview(session_id: str, body: EndDrillRequest = None):
             wp = s.get("weak_point")
             sc = s.get("score")
             if wp and isinstance(sc, (int, float)):
-                update_weak_point_sr(topic, wp, sc)
+                update_weak_point_sr(topic, wp, sc, user_id)
 
         # Update profile (1 LLM call via Mem0 pipeline — uses overall data)
-        await _update_drill_profile(topic, overall, scores, len(questions))
+        await _update_drill_profile(topic, overall, scores, len(questions), user_id)
 
         del _drill_sessions[session_id]
 
@@ -651,6 +698,9 @@ async def end_interview(session_id: str, body: EndDrillRequest = None):
         raise HTTPException(404, "Session not found.")
 
     entry = _graphs[session_id]
+    if entry.get("user_id") != user_id:
+        raise HTTPException(403, "Access denied.")
+
     graph = entry["graph"]
     config = entry["config"]
 
@@ -674,6 +724,7 @@ async def end_interview(session_id: str, body: EndDrillRequest = None):
         mode=entry["mode"].value,
         topic=entry.get("topic"),
         messages=messages,
+        user_id=user_id,
         scores=scores,
     )
 
@@ -683,7 +734,7 @@ async def end_interview(session_id: str, body: EndDrillRequest = None):
         resume_overall["dimension_scores"] = extraction["dimension_scores"]
     if extraction.get("avg_score"):
         resume_overall["avg_score"] = extraction["avg_score"]
-    save_review(session_id, review, scores, weak_points, overall=resume_overall)
+    save_review(session_id, review, scores, weak_points, overall=resume_overall, user_id=user_id)
 
     del _graphs[session_id]
 
@@ -752,7 +803,8 @@ def _format_drill_review(questions, answers, scores, overall) -> str:
     return "\n".join(lines)
 
 
-async def _update_drill_profile(topic: str, overall: dict, scores: list, total_questions: int = 10):
+async def _update_drill_profile(topic: str, overall: dict, scores: list,
+                                total_questions: int, user_id: str):
     """Update profile from drill evaluation — Mem0-style LLM update."""
     # Compute mastery score (0-100) from per-question scores + difficulty
     valid = []
@@ -778,6 +830,7 @@ async def _update_drill_profile(topic: str, overall: dict, scores: list, total_q
         new_strong_points=overall.get("new_strong_points", []),
         topic_mastery=mastery,
         communication=overall.get("communication_observations", {}),
+        user_id=user_id,
         thinking_patterns=overall.get("thinking_patterns"),
         session_summary=overall.get("summary", ""),
         avg_score=overall.get("avg_score"),
@@ -789,12 +842,12 @@ async def _update_drill_profile(topic: str, overall: dict, scores: list, total_q
 # ── Knowledge management endpoints ──
 
 @router.get("/knowledge/{topic}/core")
-async def get_core_knowledge(topic: str):
+async def get_core_knowledge(topic: str, user_id: str = Depends(get_current_user)):
     """List core knowledge files for a topic."""
-    if topic not in TOPIC_MAP:
+    topics = load_topics(user_id)
+    if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
-    from backend.config import settings
-    topic_dir = settings.knowledge_path / TOPIC_MAP[topic]
+    topic_dir = settings.user_knowledge_path(user_id) / topics[topic]["dir"]
     if not topic_dir.exists():
         return []
     files = []
@@ -804,67 +857,67 @@ async def get_core_knowledge(topic: str):
 
 
 @router.put("/knowledge/{topic}/core/{filename}")
-async def update_core_knowledge(topic: str, filename: str, body: dict):
+async def update_core_knowledge(topic: str, filename: str, body: dict,
+                                user_id: str = Depends(get_current_user)):
     """Update a core knowledge file."""
-    if topic not in TOPIC_MAP:
+    topics = load_topics(user_id)
+    if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
-    from backend.config import settings
-    topic_dir = settings.knowledge_path / TOPIC_MAP[topic]
+    topic_dir = settings.user_knowledge_path(user_id) / topics[topic]["dir"]
     filepath = topic_dir / filename
     if not filepath.exists():
         raise HTTPException(404, f"File not found: {filename}")
     filepath.write_text(body.get("content", ""), encoding="utf-8")
     # Clear index cache so next retrieval rebuilds
-    from backend.indexer import _index_cache
-    _index_cache.pop(topic, None)
+    _index_cache.pop((user_id, topic), None)
     return {"ok": True}
 
 
 @router.delete("/knowledge/{topic}/core/{filename}")
-async def delete_core_knowledge(topic: str, filename: str):
+async def delete_core_knowledge(topic: str, filename: str,
+                                user_id: str = Depends(get_current_user)):
     """Delete a core knowledge file."""
-    if topic not in TOPIC_MAP:
+    topics = load_topics(user_id)
+    if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
-    from backend.config import settings
-    topic_dir = settings.knowledge_path / TOPIC_MAP[topic]
+    topic_dir = settings.user_knowledge_path(user_id) / topics[topic]["dir"]
     filepath = topic_dir / filename
     if not filepath.exists():
         raise HTTPException(404, f"File not found: {filename}")
     filepath.unlink()
-    from backend.indexer import _index_cache
-    _index_cache.pop(topic, None)
+    _index_cache.pop((user_id, topic), None)
     return {"ok": True}
 
 
 @router.post("/knowledge/{topic}/core")
-async def create_core_knowledge(topic: str, body: dict):
+async def create_core_knowledge(topic: str, body: dict,
+                                user_id: str = Depends(get_current_user)):
     """Create a new core knowledge file."""
-    if topic not in TOPIC_MAP:
+    topics = load_topics(user_id)
+    if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
     filename = body.get("filename", "").strip()
     if not filename or not filename.endswith(".md"):
         raise HTTPException(400, "Filename must end with .md")
-    from backend.config import settings
-    topic_dir = settings.knowledge_path / TOPIC_MAP[topic]
+    topic_dir = settings.user_knowledge_path(user_id) / topics[topic]["dir"]
     topic_dir.mkdir(parents=True, exist_ok=True)
     filepath = topic_dir / filename
     if filepath.exists():
         raise HTTPException(409, f"File already exists: {filename}")
     filepath.write_text(body.get("content", ""), encoding="utf-8")
-    from backend.indexer import _index_cache
-    _index_cache.pop(topic, None)
+    _index_cache.pop((user_id, topic), None)
     return {"ok": True, "filename": filename}
 
 
 @router.post("/knowledge/{topic}/generate")
-async def generate_core_knowledge(topic: str):
+async def generate_core_knowledge(topic: str, user_id: str = Depends(get_current_user)):
     """Use LLM to generate foundational knowledge content for a topic."""
-    if topic not in TOPIC_MAP:
+    topics = load_topics(user_id)
+    if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
     from backend.llm_provider import get_langchain_llm
     from langchain_core.messages import SystemMessage, HumanMessage
 
-    topics = load_topics()
     topic_name = topics[topic].get("name", topic)
 
     llm = get_langchain_llm()
@@ -884,62 +937,67 @@ async def generate_core_knowledge(topic: str):
     ])
     content = resp.content.strip()
 
-    topic_dir = settings.knowledge_path / TOPIC_MAP[topic]
+    topic_dir = settings.user_knowledge_path(user_id) / topics[topic]["dir"]
     topic_dir.mkdir(parents=True, exist_ok=True)
     readme = topic_dir / "README.md"
     readme.write_text(content, encoding="utf-8")
-    _index_cache.pop(topic, None)
+    _index_cache.pop((user_id, topic), None)
 
     return {"ok": True, "content": content}
 
 
 @router.get("/knowledge/{topic}/high_freq")
-async def get_high_freq(topic: str):
+async def get_high_freq(topic: str, user_id: str = Depends(get_current_user)):
     """Get high-frequency question bank for a topic."""
-    if topic not in TOPIC_MAP:
+    topics = load_topics(user_id)
+    if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
-    from backend.config import settings
-    filepath = settings.high_freq_path / f"{topic}.md"
+    filepath = settings.user_high_freq_path(user_id) / f"{topic}.md"
     if not filepath.exists():
         return {"content": ""}
     return {"content": filepath.read_text(encoding="utf-8")}
 
 
 @router.put("/knowledge/{topic}/high_freq")
-async def update_high_freq(topic: str, body: dict):
+async def update_high_freq(topic: str, body: dict, user_id: str = Depends(get_current_user)):
     """Update high-frequency question bank for a topic."""
-    if topic not in TOPIC_MAP:
+    topics = load_topics(user_id)
+    if topic not in topics:
         raise HTTPException(400, f"Unknown topic: {topic}")
-    from backend.config import settings
-    settings.high_freq_path.mkdir(parents=True, exist_ok=True)
-    filepath = settings.high_freq_path / f"{topic}.md"
+    hf_dir = settings.user_high_freq_path(user_id)
+    hf_dir.mkdir(parents=True, exist_ok=True)
+    filepath = hf_dir / f"{topic}.md"
     filepath.write_text(body.get("content", ""), encoding="utf-8")
     return {"ok": True}
 
 
-@router.get("/graph/{topic}")
-def get_topic_graph(topic: str):
-    """Build question relationship graph for a topic."""
-    return build_graph(topic)
+# ── Graph ──
 
+@router.get("/graph/{topic}")
+def get_topic_graph(topic: str, user_id: str = Depends(get_current_user)):
+    """Build question relationship graph for a topic."""
+    return build_graph(topic, user_id)
+
+
+# ── Reference answer ──
 
 @router.post("/interview/reference-answer")
-async def generate_reference_answer(body: dict):
+async def generate_reference_answer(body: dict, user_id: str = Depends(get_current_user)):
     """Generate a reference answer for a specific question using LLM + knowledge base."""
     topic = body.get("topic", "").strip()
     question = body.get("question", "").strip()
     if not topic or not question:
         raise HTTPException(400, "topic and question are required")
 
-    from backend.indexer import retrieve_topic_context, load_topics
+    from backend.indexer import retrieve_topic_context
     from backend.llm_provider import get_langchain_llm
     from backend.prompts.interviewer import REFERENCE_ANSWER_PROMPT
     from langchain_core.messages import HumanMessage
 
-    topics = load_topics()
+    topics = load_topics(user_id)
     topic_name = topics.get(topic, {}).get("name", topic)
 
-    refs = retrieve_topic_context(topic, question, top_k=3)
+    refs = retrieve_topic_context(topic, question, user_id, top_k=3)
     knowledge_context = "\n\n".join(refs) if refs else "（暂无参考材料）"
 
     prompt = REFERENCE_ANSWER_PROMPT.format(
@@ -953,10 +1011,12 @@ async def generate_reference_answer(body: dict):
     return {"reference_answer": resp.content.strip()}
 
 
+# ── History ──
+
 @router.get("/interview/review/{session_id}")
-async def get_review(session_id: str):
+async def get_review(session_id: str, user_id: str = Depends(get_current_user)):
     """Get review for a completed session."""
-    session = get_session(session_id)
+    session = get_session(session_id, user_id=user_id)
     if not session:
         raise HTTPException(404, "Session not found.")
     if not session.get("review"):
@@ -970,24 +1030,25 @@ async def get_history(
     offset: int = 0,
     mode: str = None,
     topic: str = None,
+    user_id: str = Depends(get_current_user),
 ):
     """List past interview sessions with filtering and pagination."""
-    return list_sessions(limit=limit, offset=offset, mode=mode, topic=topic)
+    return list_sessions(user_id=user_id, limit=limit, offset=offset, mode=mode, topic=topic)
 
 
 @router.delete("/interview/session/{session_id}")
-async def delete_session_endpoint(session_id: str):
+async def delete_session_endpoint(session_id: str, user_id: str = Depends(get_current_user)):
     """Delete a session record."""
-    deleted = delete_session(session_id)
+    deleted = delete_session(session_id, user_id=user_id)
     if not deleted:
         raise HTTPException(404, "Session not found.")
     return {"ok": True}
 
 
 @router.get("/interview/topics")
-async def get_interview_topics():
+async def get_interview_topics(user_id: str = Depends(get_current_user)):
     """List distinct topics from completed sessions (for filter dropdown)."""
-    return list_distinct_topics()
+    return list_distinct_topics(user_id=user_id)
 
 
 app.include_router(router)

@@ -49,12 +49,12 @@ def sm2_update(sr_state: dict, score_0_10: float) -> dict:
     }
 
 
-def get_due_reviews(topic: str = None) -> list[dict]:
+def get_due_reviews(user_id: str, topic: str = None) -> list[dict]:
     """Get weak points that are due for review.
 
     Returns list of weak_point dicts sorted by ease_factor (hardest first).
     """
-    profile = _load_profile()
+    profile = _load_profile(user_id)
     today = date.today().isoformat()
     due = []
 
@@ -73,12 +73,12 @@ def get_due_reviews(topic: str = None) -> list[dict]:
     return due
 
 
-def update_weak_point_sr(topic: str, point_text: str, score: float):
+def update_weak_point_sr(topic: str, point_text: str, score: float, user_id: str):
     """Update spaced repetition state for a specific weak point after evaluation.
 
     Matches by topic + point text substring.
     """
-    profile = _load_profile()
+    profile = _load_profile(user_id)
 
     for wp in profile.get("weak_points", []):
         if wp.get("improved"):
@@ -89,15 +89,15 @@ def update_weak_point_sr(topic: str, point_text: str, score: float):
         if point_text.lower() in wp["point"].lower() or wp["point"].lower() in point_text.lower():
             sr = wp.get("sr", {})
             wp["sr"] = sm2_update(sr, score)
-            _save_profile(profile)
+            _save_profile(profile, user_id)
             return True
 
     return False
 
 
-def init_sr_for_existing_points():
+def init_sr_for_existing_points(user_id: str):
     """Initialize SR state for existing weak points that don't have it yet."""
-    profile = _load_profile()
+    profile = _load_profile(user_id)
     changed = False
 
     for wp in profile.get("weak_points", []):
@@ -114,4 +114,4 @@ def init_sr_for_existing_points():
             changed = True
 
     if changed:
-        _save_profile(profile)
+        _save_profile(profile, user_id)

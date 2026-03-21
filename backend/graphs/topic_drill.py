@@ -5,23 +5,14 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from backend.config import settings
 from backend.llm_provider import get_langchain_llm
-from backend.indexer import retrieve_topic_context, TOPIC_MAP
+from backend.indexer import retrieve_topic_context, load_topics
 from backend.memory import get_profile_summary, get_profile_summary_for_drill, get_topic_context_for_drill
 from backend.prompts.interviewer import DRILL_QUESTION_GEN_PROMPT, DRILL_BATCH_EVAL_PROMPT
 
-def _get_topic_display() -> dict[str, str]:
+
+def _get_topic_display(user_id: str) -> dict[str, str]:
     """Dynamic {key: display_name} from topics.json."""
-    from backend.indexer import load_topics
-    return {k: v["name"] for k, v in load_topics().items()}
-
-
-# Lazy proxy so existing `TOPIC_DISPLAY.get(k, k)` calls still work
-class _DisplayProxy(dict):
-    def get(self, key, default=None):   return _get_topic_display().get(key, default)
-    def __getitem__(self, key):         return _get_topic_display()[key]
-    def __contains__(self, key):        return key in _get_topic_display()
-
-TOPIC_DISPLAY = _DisplayProxy()
+    return {k: v["name"] for k, v in load_topics(user_id).items()}
 
 
 def _parse_json_response(content: str) -> dict | list:
@@ -55,27 +46,27 @@ def _parse_json_response(content: str) -> dict | list:
     raise json.JSONDecodeError("No valid JSON found", content, 0)
 
 
-def _load_high_freq(topic: str) -> str:
+def _load_high_freq(topic: str, user_id: str) -> str:
     """Load high-frequency question bank for a topic."""
-    from backend.config import settings
-    filepath = settings.high_freq_path / f"{topic}.md"
+    filepath = settings.user_high_freq_path(user_id) / f"{topic}.md"
     if filepath.exists():
         return filepath.read_text(encoding="utf-8").strip()
     return ""
 
 
-def generate_drill_questions(topic: str) -> list[dict]:
+def generate_drill_questions(topic: str, user_id: str) -> list[dict]:
     """Generate 10 personalized questions for a topic. 1 LLM call."""
     from backend.spaced_repetition import get_due_reviews, init_sr_for_existing_points
 
     # Ensure existing weak points have SR state
-    init_sr_for_existing_points()
+    init_sr_for_existing_points(user_id)
 
-    topic_name = TOPIC_DISPLAY.get(topic, topic)
-    drill_ctx = get_topic_context_for_drill(topic)
+    topic_display = _get_topic_display(user_id)
+    topic_name = topic_display.get(topic, topic)
+    drill_ctx = get_topic_context_for_drill(topic, user_id)
 
     # Spaced repetition: prioritize due reviews
-    due_reviews = get_due_reviews(topic)
+    due_reviews = get_due_reviews(user_id, topic)
     due_points = [wp["point"] for wp in due_reviews[:5]]
 
     all_weak = list(drill_ctx["weak_points"])
@@ -91,7 +82,7 @@ def generate_drill_questions(topic: str) -> list[dict]:
 
     all_chunks = []
     for q in queries:
-        all_chunks.extend(retrieve_topic_context(topic, q, top_k=5))
+        all_chunks.extend(retrieve_topic_context(topic, q, user_id, top_k=5))
     # Deduplicate and limit
     seen = set()
     unique_chunks = []
@@ -108,7 +99,7 @@ def generate_drill_questions(topic: str) -> list[dict]:
     ) or "暂无历史数据"
 
     # Load high-frequency questions
-    high_freq = _load_high_freq(topic) or "暂无"
+    high_freq = _load_high_freq(topic, user_id) or "暂无"
 
     # Format weak points, marking due reviews
     weak_lines = []
@@ -119,7 +110,7 @@ def generate_drill_questions(topic: str) -> list[dict]:
     prompt = DRILL_QUESTION_GEN_PROMPT.format(
         topic_name=topic_name,
         knowledge_context=knowledge_ctx,
-        user_profile=get_profile_summary_for_drill(),
+        user_profile=get_profile_summary_for_drill(user_id),
         mastery_info=drill_ctx["mastery_info"],
         weak_points="\n".join(weak_lines) or "暂无",
         high_freq_questions=high_freq,
@@ -150,9 +141,11 @@ def generate_drill_questions(topic: str) -> list[dict]:
         raise RuntimeError(f"出题失败，LLM 返回格式异常: {e}")
 
 
-def evaluate_drill_answers(topic: str, questions: list[dict], answers: list[dict]) -> dict:
+def evaluate_drill_answers(topic: str, questions: list[dict], answers: list[dict],
+                           user_id: str) -> dict:
     """Batch evaluate all answers. 1 LLM call."""
-    topic_name = TOPIC_DISPLAY.get(topic, topic)
+    topic_display = _get_topic_display(user_id)
+    topic_name = topic_display.get(topic, topic)
     answer_map = {a["question_id"]: a["answer"] for a in answers}
 
     # Only evaluate answered questions
@@ -165,7 +158,7 @@ def evaluate_drill_answers(topic: str, questions: list[dict], answers: list[dict
         answer = answer_map[qid]
         qa_lines.append(f"### Q{qid} (难度 {q.get('difficulty', '?')}/5)\n**题目**: {q['question']}\n**回答**: {answer}")
 
-        refs = retrieve_topic_context(topic, q["question"], top_k=2)
+        refs = retrieve_topic_context(topic, q["question"], user_id, top_k=2)
         if refs:
             ref_lines.append(f"### Q{qid} 参考\n" + "\n".join(refs)[:800])
 

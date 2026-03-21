@@ -18,10 +18,6 @@ from backend.llm_provider import get_langchain_llm
 
 logger = logging.getLogger("uvicorn")
 
-PROFILE_DIR = settings.base_dir / "data" / "user_profile"
-PROFILE_PATH = PROFILE_DIR / "profile.json"
-INSIGHTS_DIR = PROFILE_DIR / "insights"
-
 # ── Profile Schema ──
 
 DEFAULT_PROFILE = {
@@ -124,27 +120,39 @@ EXTRACT_PROMPT = """你是一个面试教练的分析引擎。根据面试对话
 """
 
 
+# ── Per-user path helpers ──
 
-def _load_profile() -> dict:
-    if PROFILE_PATH.exists():
-        return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+def _profile_path(user_id: str) -> Path:
+    return settings.user_profile_dir(user_id) / "profile.json"
+
+
+def _insights_dir(user_id: str) -> Path:
+    return settings.user_profile_dir(user_id) / "insights"
+
+
+def _load_profile(user_id: str) -> dict:
+    path = _profile_path(user_id)
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
     return DEFAULT_PROFILE.copy()
 
 
-def _save_profile(profile: dict):
-    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+def _save_profile(profile: dict, user_id: str):
+    path = _profile_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
     profile["updated_at"] = datetime.now().isoformat()
-    PROFILE_PATH.write_text(
+    path.write_text(
         json.dumps(profile, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
-def _save_insight(mode: str, topic: str, summary: str, raw_extraction: dict):
+def _save_insight(mode: str, topic: str, summary: str, raw_extraction: dict, user_id: str):
     """Append daily insight file (OpenClaw-style daily log)."""
-    INSIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    ins_dir = _insights_dir(user_id)
+    ins_dir.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
-    path = INSIGHTS_DIR / f"{today}.md"
+    path = ins_dir / f"{today}.md"
 
     time_str = datetime.now().strftime("%H:%M")
     entry = f"\n## {time_str} | {mode} | {topic or '综合'}\n\n{summary}\n"
@@ -165,13 +173,13 @@ def _save_insight(mode: str, topic: str, summary: str, raw_extraction: dict):
         f.write(entry)
 
 
-def get_profile() -> dict:
-    return _load_profile()
+def get_profile(user_id: str) -> dict:
+    return _load_profile(user_id)
 
 
-def get_topic_context_for_drill(topic: str) -> dict:
+def get_topic_context_for_drill(topic: str, user_id: str) -> dict:
     """Get personalized context for drill question generation."""
-    profile = _load_profile()
+    profile = _load_profile(user_id)
 
     mastery = profile.get("topic_mastery", {}).get(topic, {})
     mastery_score = mastery.get("score", mastery.get("level", 0) * 20)
@@ -202,6 +210,7 @@ def get_topic_context_for_drill(topic: str) -> dict:
             query=f"{topic} 面试薄弱点 常见错误",
             chunk_types=["session_summary", "insight"],
             topic=topic,
+            user_id=user_id,
             top_k=3,
         )
         past_insights = [r["content"] for r in results if r["score"] > 0.3]
@@ -220,11 +229,12 @@ def get_topic_context_for_drill(topic: str) -> dict:
 def update_profile_realtime(
     mode: str,
     topic: str | None,
+    user_id: str,
     score_entry: dict | None = None,
     weak_point: str | None = None,
 ):
     """Lightweight per-answer profile update — no LLM call, just save the data."""
-    profile = _load_profile()
+    profile = _load_profile(user_id)
     now = datetime.now().isoformat()
 
     # Record score
@@ -246,7 +256,7 @@ def update_profile_realtime(
     # Record weak point (semantic matching)
     if weak_point:
         from backend.vector_memory import find_similar_weak_point
-        match_idx = find_similar_weak_point(weak_point, profile.get("weak_points", []))
+        match_idx = find_similar_weak_point(weak_point, profile.get("weak_points", []), user_id=user_id)
         if match_idx is not None:
             profile["weak_points"][match_idx]["times_seen"] = profile["weak_points"][match_idx].get("times_seen", 1) + 1
             profile["weak_points"][match_idx]["last_seen"] = now
@@ -264,12 +274,12 @@ def update_profile_realtime(
     profile.setdefault("stats", {}).setdefault("total_answers", 0)
     profile["stats"]["total_answers"] = profile["stats"].get("total_answers", 0) + 1
 
-    _save_profile(profile)
+    _save_profile(profile, user_id)
 
 
-def get_profile_summary() -> str:
+def get_profile_summary(user_id: str) -> str:
     """Generate a concise summary for injection into interviewer prompts."""
-    profile = _load_profile()
+    profile = _load_profile(user_id)
 
     parts = []
     if profile.get("weak_points"):
@@ -305,9 +315,9 @@ def get_profile_summary() -> str:
     return "\n".join(parts) if parts else "新用户，暂无历史数据"
 
 
-def get_profile_summary_for_drill() -> str:
+def get_profile_summary_for_drill(user_id: str) -> str:
     """Concise summary for drill question generation — only cross-topic info."""
-    profile = _load_profile()
+    profile = _load_profile(user_id)
     parts = []
 
     if profile.get("communication", {}).get("style"):
@@ -388,13 +398,14 @@ def _apply_memory_ops(profile: dict, ops: dict, topic: str | None, now: str):
             })
 
 
-def _deterministic_update(profile: dict, new_weak: list, new_strong: list, topic: str | None, now: str):
+def _deterministic_update(profile: dict, new_weak: list, new_strong: list,
+                          topic: str | None, now: str, user_id: str):
     """Fallback: vector cosine dedup when LLM parse fails."""
     from backend.vector_memory import find_similar_weak_point
 
     for wp in new_weak:
         point = wp.get("point", wp) if isinstance(wp, dict) else str(wp)
-        match_idx = find_similar_weak_point(point, profile.get("weak_points", []))
+        match_idx = find_similar_weak_point(point, profile.get("weak_points", []), user_id=user_id)
         if match_idx is not None:
             profile["weak_points"][match_idx]["times_seen"] = profile["weak_points"][match_idx].get("times_seen", 1) + 1
             profile["weak_points"][match_idx]["last_seen"] = now
@@ -524,6 +535,7 @@ async def llm_update_profile(
     new_strong_points: list[dict],
     topic_mastery: dict,
     communication: dict,
+    user_id: str,
     thinking_patterns: dict | None = None,
     session_summary: str = "",
     avg_score: float | None = None,
@@ -534,7 +546,7 @@ async def llm_update_profile(
     """Mem0-style profile update: LLM decides ADD/UPDATE/NOOP for each fact."""
     from backend.prompts.interviewer import PROFILE_UPDATE_PROMPT
 
-    profile = _load_profile()
+    profile = _load_profile(user_id)
     now = datetime.now().isoformat()
 
     # ── LLM-based update for weak/strong points ──
@@ -584,7 +596,7 @@ async def llm_update_profile(
                 raise ValueError(f"Expected dict, got {type(ops)}")
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             logger.warning(f"Profile update LLM parse failed ({e}), falling back to deterministic")
-            _deterministic_update(profile, new_weak_points, new_strong_points, topic, now)
+            _deterministic_update(profile, new_weak_points, new_strong_points, topic, now, user_id)
 
     # ── Deterministic updates for mastery / communication / thinking / stats ──
     _update_mastery(profile, topic, topic_mastery, now, session_weight)
@@ -592,11 +604,11 @@ async def llm_update_profile(
     _update_thinking_patterns(profile, thinking_patterns)
     _update_stats(profile, mode, topic, avg_score, now, answer_count, dimension_scores)
 
-    _save_profile(profile)
+    _save_profile(profile, user_id)
     _save_insight(mode=mode, topic=topic, summary=session_summary, raw_extraction={
         "weak_points": new_weak_points,
         "strong_points": new_strong_points,
-    })
+    }, user_id=user_id)
 
     # Index into vector memory for future semantic retrieval
     from backend.vector_memory import index_session_memory
@@ -606,6 +618,7 @@ async def llm_update_profile(
         weak_points=new_weak_points,
         strong_points=new_strong_points,
         insight_text=session_summary,
+        user_id=user_id,
     )
 
 
@@ -613,10 +626,11 @@ async def update_profile_after_interview(
     mode: str,
     topic: str | None,
     messages: list,
+    user_id: str,
     scores: list[dict] | None = None,
 ) -> dict:
     """Mem0-style two-stage pipeline: Extract → Update."""
-    profile = _load_profile()
+    profile = _load_profile(user_id)
     llm = get_langchain_llm()
 
     # ── Stage 1: Extract insights ──
@@ -667,6 +681,7 @@ async def update_profile_after_interview(
         new_strong_points=extraction.get("strong_points", []),
         topic_mastery=extraction.get("topic_mastery", {}),
         communication=extraction.get("communication_observations", {}),
+        user_id=user_id,
         thinking_patterns=extraction.get("thinking_patterns"),
         session_summary=extraction.get("session_summary", ""),
         avg_score=extraction.get("avg_score"),

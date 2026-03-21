@@ -48,81 +48,82 @@ def _parse_inline_eval(content: str) -> tuple[str, dict | None]:
         return clean, None
 
 
-def init_interview(state: ResumeInterviewState) -> dict:
-    """Load resume context and prepare the opening."""
-    resume_ctx = query_resume("列出候选人的所有项目经历、技能和教育背景")
+def _make_init_interview(user_id: str):
+    """Create init_interview node bound to a specific user."""
+    def init_interview(state: ResumeInterviewState) -> dict:
+        """Load resume context and prepare the opening."""
+        resume_ctx = query_resume("列出候选人的所有项目经历、技能和教育背景", user_id)
 
-    system_prompt = RESUME_INTERVIEWER_SYSTEM.format(
-        resume_context=resume_ctx,
-        phase=InterviewPhase.GREETING.value,
-        asked_questions="无",
-        user_profile=get_profile_summary(),
-    )
-
-    llm = get_langchain_llm()
-    response = llm.invoke([
-        SystemMessage(content=system_prompt),
-        HumanMessage(content="面试开始，请开场并让候选人做自我介绍。"),
-    ])
-
-    return {
-        "messages": [response],
-        "resume_context": resume_ctx,
-        "phase": InterviewPhase.GREETING.value,
-        "questions_asked": [],
-        "phase_question_count": 0,
-        "is_finished": False,
-        "eval_history": [],
-    }
-
-
-def interviewer_ask(state: ResumeInterviewState) -> dict:
-    """Generate next question based on current phase and conversation."""
-    asked = state.get("questions_asked", [])
-    asked_str = "\n".join(f"- {q}" for q in asked) if asked else "无"
-
-    system_prompt = RESUME_INTERVIEWER_SYSTEM.format(
-        resume_context=state.get("resume_context", ""),
-        phase=state.get("phase", "technical"),
-        asked_questions=asked_str,
-        user_profile=get_profile_summary(),
-    )
-
-    llm = get_langchain_llm()
-    messages = [SystemMessage(content=system_prompt)] + list(state.get("messages", []))
-    response = llm.invoke(messages)
-
-    # Parse and strip inline eval from response
-    clean_content, eval_data = _parse_inline_eval(response.content)
-    count = state.get("phase_question_count", 0)
-
-    result = {
-        "messages": [AIMessage(content=clean_content)],
-        "questions_asked": asked + [clean_content[:100]],
-        "phase_question_count": count + 1,
-    }
-
-    if eval_data:
-        eval_data["phase"] = state.get("phase", "")
-        eval_data["question_index"] = count
-        result["last_eval"] = eval_data
-        result["eval_history"] = list(state.get("eval_history", [])) + [eval_data]
-        logger.info(
-            f"Inline eval: phase={eval_data['phase']}, "
-            f"score={eval_data.get('score')}, "
-            f"should_advance={eval_data.get('should_advance')}"
+        system_prompt = RESUME_INTERVIEWER_SYSTEM.format(
+            resume_context=resume_ctx,
+            phase=InterviewPhase.GREETING.value,
+            asked_questions="无",
+            user_profile=get_profile_summary(user_id),
         )
 
-    return result
+        llm = get_langchain_llm()
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content="面试开始，请开场并让候选人做自我介绍。"),
+        ])
+
+        return {
+            "messages": [response],
+            "resume_context": resume_ctx,
+            "phase": InterviewPhase.GREETING.value,
+            "questions_asked": [],
+            "phase_question_count": 0,
+            "is_finished": False,
+            "eval_history": [],
+        }
+    return init_interview
+
+
+def _make_interviewer_ask(user_id: str):
+    """Create interviewer_ask node bound to a specific user."""
+    def interviewer_ask(state: ResumeInterviewState) -> dict:
+        """Generate next question based on current phase and conversation."""
+        asked = state.get("questions_asked", [])
+        asked_str = "\n".join(f"- {q}" for q in asked) if asked else "无"
+
+        system_prompt = RESUME_INTERVIEWER_SYSTEM.format(
+            resume_context=state.get("resume_context", ""),
+            phase=state.get("phase", "technical"),
+            asked_questions=asked_str,
+            user_profile=get_profile_summary(user_id),
+        )
+
+        llm = get_langchain_llm()
+        messages = [SystemMessage(content=system_prompt)] + list(state.get("messages", []))
+        response = llm.invoke(messages)
+
+        # Parse and strip inline eval from response
+        clean_content, eval_data = _parse_inline_eval(response.content)
+        count = state.get("phase_question_count", 0)
+
+        result = {
+            "messages": [AIMessage(content=clean_content)],
+            "questions_asked": asked + [clean_content[:100]],
+            "phase_question_count": count + 1,
+        }
+
+        if eval_data:
+            eval_data["phase"] = state.get("phase", "")
+            eval_data["question_index"] = count
+            result["last_eval"] = eval_data
+            result["eval_history"] = list(state.get("eval_history", [])) + [eval_data]
+            logger.info(
+                f"Inline eval: phase={eval_data['phase']}, "
+                f"score={eval_data.get('score')}, "
+                f"should_advance={eval_data.get('should_advance')}"
+            )
+
+        return result
+    return interviewer_ask
 
 
 def route_after_answer(state: ResumeInterviewState) -> str:
-    """After user answers: keep asking, advance phase, or end.
-
-    For technical/project_deep_dive: use interviewer's inline eval when available.
-    For other phases: use simple count-based rules.
-    Hard max per phase as safety fallback.
-    """
+    """After user answers: keep asking, advance phase, or end."""
     if state.get("is_finished"):
         return "end"
 
@@ -181,12 +182,12 @@ def wait_for_answer(state: ResumeInterviewState) -> dict:
     return {}
 
 
-def compile_resume_interview():
+def compile_resume_interview(user_id: str):
     """Build and compile the resume interview graph."""
     graph = StateGraph(ResumeInterviewState)
 
-    graph.add_node("init", init_interview)
-    graph.add_node("ask", interviewer_ask)
+    graph.add_node("init", _make_init_interview(user_id))
+    graph.add_node("ask", _make_interviewer_ask(user_id))
     graph.add_node("advance", advance_phase)
     graph.add_node("wait", wait_for_answer)
 

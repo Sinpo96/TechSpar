@@ -27,9 +27,15 @@ def _init_question_embeddings_table(conn: sqlite3.Connection):
             topic         TEXT,
             question_text TEXT,
             embedding     BLOB NOT NULL,
+            user_id       TEXT,
             created_at    TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migrate: add user_id if missing
+    try:
+        conn.execute("SELECT user_id FROM question_embeddings LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE question_embeddings ADD COLUMN user_id TEXT")
     conn.commit()
 
 
@@ -37,13 +43,13 @@ def _hash_question(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
-def _extract_questions(conn: sqlite3.Connection, topic: str) -> list[dict]:
+def _extract_questions(conn: sqlite3.Connection, topic: str, user_id: str) -> list[dict]:
     """Extract all questions with scores from completed drill sessions for a topic."""
     rows = conn.execute(
         "SELECT session_id, questions, scores, created_at FROM sessions "
-        "WHERE topic = ? AND mode = 'topic_drill' AND review IS NOT NULL "
+        "WHERE topic = ? AND user_id = ? AND mode = 'topic_drill' AND review IS NOT NULL "
         "ORDER BY created_at ASC",
-        (topic,),
+        (topic, user_id),
     ).fetchall()
 
     # question_text → latest record (dedup by keeping last occurrence)
@@ -127,13 +133,13 @@ def _get_or_compute_embeddings(
     return matrix
 
 
-def build_graph(topic: str) -> dict:
+def build_graph(topic: str, user_id: str) -> dict:
     """Build question relationship graph for a topic.
 
     Returns {"nodes": [...], "links": [...]}
     """
     conn = _get_conn()
-    questions = _extract_questions(conn, topic)
+    questions = _extract_questions(conn, topic, user_id)
 
     if len(questions) < 2:
         conn.close()

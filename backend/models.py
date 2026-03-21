@@ -71,3 +71,16 @@ class RecordingAnalyzeRequest(BaseModel):
     recording_mode: str = "dual"  # "dual" | "solo"
     company: str | None = None
     position: str | None = None
+
+
+# ── Auth Models ──
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: str = ""
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
