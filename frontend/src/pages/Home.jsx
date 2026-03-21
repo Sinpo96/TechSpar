@@ -2,9 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { FileText, ChevronRight, Mic } from "lucide-react";
 import TopicCard from "../components/TopicCard";
-import { getTopics, startInterview, getResumeStatus, uploadResume } from "../api/interview";
-
-const API_BASE = "/api";
+import { getTopics, startInterview, getResumeStatus, uploadResume, getProfile } from "../api/interview";
 
 export default function Home() {
   const navigate = useNavigate();
@@ -21,7 +19,7 @@ export default function Home() {
     getResumeStatus().then((s) => {
       if (s.has_resume) setResumeFile({ filename: s.filename, size: s.size });
     }).catch(() => {});
-    fetch(`${API_BASE}/profile`).then(r => r.json()).then(setProfile).catch(() => {});
+    getProfile().then(setProfile).catch(() => {});
   }, []);
 
   const handleUpload = async (e) => {

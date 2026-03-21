@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronRight } from "lucide-react";
-
-const API_BASE = "/api";
+import { getProfile } from "../api/interview";
 
 function CollapsibleList({ items, limit, renderItem }) {
   const [expanded, setExpanded] = useState(false);
@@ -90,8 +89,7 @@ export default function Profile() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    fetch(`${API_BASE}/profile`)
-      .then((r) => r.json())
+    getProfile()
       .then(setProfile)
       .catch(() => setProfile(null))
       .finally(() => setLoading(false));
