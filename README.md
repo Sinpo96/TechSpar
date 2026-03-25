@@ -178,13 +178,24 @@ AI 读取你的简历，通过 LangGraph 状态机驱动完整流程：自我介
 cp .env.example .env
 ```
 
-最小必填配置只有这三项：
+最小必填配置是 **LLM + Embedding**。Embedding 不是可选项，必须二选一：
+
+- `EMBEDDING_BACKEND=api`：默认方案，直接走兼容 OpenAI 的 embedding API
+- `EMBEDDING_BACKEND=local`：本地模型方案，需要额外安装依赖
+
+默认推荐 `api`，配置示例：
 
 ```env
 API_BASE=https://your-llm-api-base/v1
 API_KEY=sk-your-api-key
 MODEL=your-model-name
+EMBEDDING_BACKEND=api
+EMBEDDING_API_BASE=https://your-embedding-api-base/v1
+EMBEDDING_API_KEY=sk-your-embedding-key
+EMBEDDING_API_MODEL=BAAI/bge-m3
 ```
+
+如果你使用官方 OpenAI embedding 接口，`EMBEDDING_API_BASE` 可以留空。
 
 认证默认值如下，不配置也能启动：
 
@@ -196,7 +207,19 @@ DEFAULT_NAME=Admin
 ALLOW_REGISTRATION=false
 ```
 
-如果你要启用 embedding、录音转写、OSS 上传等能力，再继续补全 `.env.example` 里的可选项。
+如果你要改成本地 embedding，继续补全 `.env.example` 里的 `LOCAL_EMBEDDING_*`。
+
+如果你要启用录音转写，还需要继续补全这些可选项：
+
+```env
+DASHSCOPE_API_KEY=
+QINIU_ACCESS_KEY=
+QINIU_SECRET_KEY=
+QINIU_BUCKET=
+QINIU_DOMAIN=
+```
+
+`.env.example` 已经补齐了完整示例，可直接按需删改。
 
 ### 2. Docker 启动
 
@@ -251,7 +274,7 @@ python -m backend.migrate
 
 ## 可选能力
 
-- **API Embedding / 本地 Embedding**
+- **Embedding 后端切换（API / 本地）**
 - **录音上传与转写分析**
 - **七牛云 OSS 存储**
 - **多用户数据隔离**
