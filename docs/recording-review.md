@@ -1,6 +1,15 @@
 # 录音复盘
 
-![录音复盘分析](.gitbook/assets/recording_review.png)
+<picture>
+  <source
+    srcset="images/recording-review-dark.png"
+    media="(prefers-color-scheme: dark)"
+  />
+  <img
+    src="images/recording-review-light.png"
+    alt="录音复盘分析"
+  />
+</picture>
 
 录音复盘是一个独立工作区，用来分析**真实面试录音或已有逐字稿**，不是去历史记录里回放旧音频。
 
@@ -15,8 +24,8 @@
 2. 选择 **双人对话** 或 **单人录音**。
 3. 公司、岗位可以填，也可以不填；填了有助于结果更聚焦。
 4. 选择输入方式：
-   * 上传录音
-   * 直接粘贴转写文本
+   - 上传录音
+   - 直接粘贴转写文本
 5. 如果你上传的是录音，先执行转写；拿到文本后再开始分析。
 6. 提交后系统会异步生成复盘，完成后可以从通知或历史记录进入结果页。
 
