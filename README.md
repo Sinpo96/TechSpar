@@ -89,7 +89,7 @@ TechSpar 不是单页 Demo，而是完整系统：
 - 前端：React 19 + React Router v7 + Vite
 - 后端：FastAPI + LangGraph 工作流
 - 数据层：SQLite、用户隔离目录、长期画像、向量检索
-- 外部服务：OpenAI 兼容 LLM、Embedding、DashScope ASR、Qiniu OSS
+- 外部服务：OpenAI 兼容 LLM、Embedding、阿里云 NLS、DashScope ASR、Tavily、Qiniu OSS
 
 ---
 
@@ -106,6 +106,10 @@ AI 读取你的简历，通过 LangGraph 状态机驱动完整流程：自我介
 ### JD 定向备面
 
 输入岗位描述后，系统会抽取 JD 重点，围绕岗位要求、简历经历和知识库内容生成更贴近真实岗位的问题。
+
+### 面试 Copilot
+
+先基于 JD、简历和历史画像做预处理，生成 HR 提问策略树与高危路径；进入实时模式后，系统会持续转写 HR 发言、预测下一步追问方向，并给出回答建议。
 
 ### 录音复盘
 
@@ -155,7 +159,7 @@ AI 读取你的简历，通过 LangGraph 状态机驱动完整流程：自我介
 | --- | --- |
 | ![Job prep](images/job-prep.png) | ![Recording review](images/recording-review.png) |
 
-除了刷题，还可以围绕岗位描述定向训练，或对真实面试录音做结构化复盘。
+除了围绕岗位描述定向训练，还可以在准备完成后进入 **Interview Copilot** 做实时辅助，或对真实面试录音做结构化复盘。
 
 ---
 
@@ -201,11 +205,25 @@ EMBEDDING_API_MODEL=BAAI/bge-m3
 JWT_SECRET=change-me-in-production
 DEFAULT_EMAIL=admin@techspar.local
 DEFAULT_PASSWORD=admin123
-DEFAULT_NAME=Admin
+DEFAULT_NAME=admin
 ALLOW_REGISTRATION=false
 ```
 
 如果你要改成本地 embedding，继续补全 `.env.example` 里的 `LOCAL_EMBEDDING_*`。
+
+如果你要启用面试 Copilot 的独立模型、实时语音识别或联网搜索，还需要继续补全这些可选项：
+
+```env
+COPILOT_API_BASE=
+COPILOT_API_KEY=
+COPILOT_MODEL=
+NLS_APPKEY=
+NLS_ACCESS_KEY_ID=
+NLS_ACCESS_KEY_SECRET=
+TAVILY_API_KEY=
+```
+
+不填 `COPILOT_*` 时会回退到主 LLM；不配 NLS 时仍可使用 Copilot，但只能手动输入 HR 的问题。
 
 如果你要启用录音转写，还需要继续补全这些可选项：
 
@@ -260,6 +278,12 @@ npm run dev
 http://localhost:5173
 ```
 
+登录后可从侧栏进入 `面试 Copilot`，或直接访问：
+
+```text
+http://localhost:5173/copilot
+```
+
 ### 4. 从旧版迁移
 
 如果你是从无认证旧版升级：
@@ -273,6 +297,8 @@ python -m backend.migrate
 ## 可选能力
 
 - **Embedding 后端切换（API / 本地）**
+- **面试 Copilot（JD 预处理、策略树、高危路径、实时回答建议）**
+- **Copilot 独立 LLM / 阿里云 NLS / Tavily 检索**
 - **录音上传与转写分析**
 - **七牛云 OSS 存储**
 - **多用户数据隔离**
@@ -304,17 +330,23 @@ TechSpar/
 │   ├── indexer.py
 │   ├── spaced_repetition.py
 │   ├── migrate.py
+│   ├── copilot/
 │   ├── graphs/
 │   │   ├── resume_interview.py
-│   │   └── topic_drill.py
+│   │   ├── topic_drill.py
+│   │   ├── job_prep.py
+│   │   └── copilot_prep.py
 │   ├── prompts/
 │   └── storage/sessions.py
 ├── frontend/src/
 │   ├── App.jsx
 │   ├── contexts/AuthContext.jsx
 │   ├── components/
+│   ├── hooks/useCopilotStream.js
 │   ├── pages/
-│   └── api/interview.js
+│   └── api/
+│       ├── interview.js
+│       └── copilot.js
 ├── data/users/{user_id}/
 │   ├── profile/profile.json
 │   ├── resume/
