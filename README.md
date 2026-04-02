@@ -314,3 +314,9 @@ CC BY-NC 4.0
 [![Star History Chart](https://api.star-history.com/svg?repos=AnnaSuSu/TechSpar&type=Date)](https://star-history.com/#AnnaSuSu/TechSpar&Date)
 
 </div>
+
+---
+
+## 致谢
+
+感谢 [LINUX DO](https://linux.do/) 社区的支持。
