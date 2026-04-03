@@ -60,6 +60,7 @@ export default function useCopilotStream({ prepId, onUpdate } = {}) {
           case "asr_final":
             setAsrText("");
             setLastFinal(msg.text || "");
+            if (onUpdateRef.current) onUpdateRef.current(msg);
             break;
           case "copilot_update":
           case "risk_alert":

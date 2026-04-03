@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Brain, CheckCircle2, ChevronRight, Loader2, Mic, MicOff,
-  AlertTriangle, Send, Eye, Radio, ArrowRight, Shield, Target,
+  AlertTriangle, Send, Eye, Radio, Target,
   Sparkles, FileText, User, ShieldAlert, Plus, Trash2, Clock,
   ChevronLeft, Building2, Maximize2, Minimize2,
 } from "lucide-react";
@@ -23,6 +23,30 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 const PAGE_CLASS = "flex-1 w-full max-w-[1600px] mx-auto px-4 py-6 md:px-7 md:py-8 xl:px-10 2xl:px-12";
+
+/* ── Inject micro-animation keyframes once ── */
+const COPILOT_STYLE_ID = "copilot-micro-animations";
+if (typeof document !== "undefined" && !document.getElementById(COPILOT_STYLE_ID)) {
+  const style = document.createElement("style");
+  style.id = COPILOT_STYLE_ID;
+  style.textContent = `
+    @keyframes copilot-fade-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes copilot-pulse-glow { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } 50% { box-shadow: 0 0 12px 2px rgba(239,68,68,0.15); } }
+    @keyframes copilot-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+    @keyframes copilot-breathe { 0%, 100% { opacity: 0.5; transform: scale(1); } 50% { opacity: 1; transform: scale(1.35); } }
+    @keyframes copilot-connection-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.4); } 50% { box-shadow: 0 0 0 6px rgba(34,197,94,0); } }
+    .copilot-fade-up { animation: copilot-fade-up 0.45s cubic-bezier(0.16,1,0.3,1) both; }
+    .copilot-stagger-1 { animation-delay: 0.05s; }
+    .copilot-stagger-2 { animation-delay: 0.1s; }
+    .copilot-stagger-3 { animation-delay: 0.15s; }
+    .copilot-stagger-4 { animation-delay: 0.2s; }
+    .copilot-danger-glow { animation: copilot-pulse-glow 2.5s ease-in-out infinite; }
+    .copilot-shimmer-bg { background: linear-gradient(90deg, transparent 30%, rgba(255,255,255,0.06) 50%, transparent 70%); background-size: 200% 100%; animation: copilot-shimmer 2s infinite linear; }
+    .copilot-breathe { animation: copilot-breathe 2s ease-in-out infinite; }
+    .copilot-connected-pulse { animation: copilot-connection-pulse 2s ease-in-out infinite; }
+  `;
+  document.head.appendChild(style);
+}
 
 function formatFileSize(size) {
   if (!size) return null;
@@ -188,7 +212,6 @@ function ListView({ onNew, onSelect }) {
 // ══════════════════════════════════════════════════════════════
 
 function DetailView({ prepId: initialPrepId, onBack, onStartInterview }) {
-  const navigate = useNavigate();
   const [company, setCompany] = useState("");
   const [position, setPosition] = useState("");
   const [jdText, setJdText] = useState("");
@@ -485,17 +508,20 @@ function DetailView({ prepId: initialPrepId, onBack, onStartInterview }) {
             </CardContent>
           </Card>
 
-          <Card className="border-border/80">
-            <CardContent className="p-5">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-dim/80">当前输入</div>
-              <div className="mt-3 space-y-3 text-sm">
-                <InfoRow label="公司" value={company.trim() || "未填写"} />
-                <InfoRow label="岗位" value={position.trim() || "未填写"} />
-                <InfoRow label="简历" value={resumeReady ? resumeFile.filename : "未检测到"} />
-                <InfoRow label="画像" value={topicCount > 0 ? `${topicCount} 领域 / ${weakPointCount} 弱点` : "暂无"} />
-              </div>
-            </CardContent>
-          </Card>
+          {/* Hide redundant 当前输入 card when analysis is complete */}
+          {!isDone && (
+            <Card className="border-border/80">
+              <CardContent className="p-5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-dim/80">当前输入</div>
+                <div className="mt-3 space-y-3 text-sm">
+                  <InfoRow label="公司" value={company.trim() || "未填写"} />
+                  <InfoRow label="岗位" value={position.trim() || "未填写"} />
+                  <InfoRow label="简历" value={resumeReady ? resumeFile.filename : "未检测到"} />
+                  <InfoRow label="画像" value={topicCount > 0 ? `${topicCount} 领域 / ${weakPointCount} 弱点` : "暂无"} />
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
 
@@ -531,39 +557,46 @@ function PrepResultCards({ status }) {
   const highlights = fitReport.highlights || [];
   const gaps = fitReport.gaps || [];
   const skills = jdAnalysis.required_skills || [];
-  const dimensions = jdAnalysis.likely_question_dimensions || [];
   const dangerNodes = riskMap.filter((r) => r.risk_level === "danger");
 
   return (
     <>
       {/* ── 第一层：情报摘要，最醒目，第一眼看到 ── */}
-      <Card className="overflow-hidden border-primary/20 bg-[radial-gradient(ellipse_at_top_left,rgba(59,130,246,0.13),transparent_50%),linear-gradient(160deg,rgba(255,255,255,0.99),rgba(238,244,255,0.95))] dark:bg-[radial-gradient(ellipse_at_top_left,rgba(59,130,246,0.18),transparent_50%),linear-gradient(160deg,rgba(20,20,28,0.99),rgba(24,32,50,0.92))]">
+      <Card className="copilot-fade-up overflow-hidden border-primary/25 bg-[radial-gradient(ellipse_at_top_left,rgba(59,130,246,0.16),transparent_50%),linear-gradient(160deg,rgba(255,255,255,0.99),rgba(228,238,255,0.92))] dark:bg-[radial-gradient(ellipse_at_top_left,rgba(59,130,246,0.22),transparent_50%),linear-gradient(160deg,rgba(20,20,28,0.99),rgba(24,32,50,0.92))]">
         <CardContent className="p-5 md:p-7 xl:p-8">
-          <div className="flex flex-wrap items-center gap-2 mb-5">
-            <Brain size={18} className="text-primary" />
-            <span className="text-lg font-semibold">
+          <div className="flex flex-wrap items-center gap-3 mb-5">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-primary">
+              <Brain size={20} />
+            </div>
+            <span className="text-xl font-bold tracking-tight">
               {companyReport.company_name
                 ? `${companyReport.company_name} · ${jdAnalysis.role_title || "技术岗位"}`
                 : jdAnalysis.role_title || "面试准备完成"}
             </span>
-            <Badge variant={fitReport.overall_fit >= 0.7 ? "green" : fitReport.overall_fit >= 0.5 ? "blue" : "destructive"}>
+            <Badge variant={fitReport.overall_fit >= 0.7 ? "green" : fitReport.overall_fit >= 0.5 ? "blue" : "destructive"} className="text-xs px-3 py-1">
               匹配度 {Math.round((fitReport.overall_fit || 0) * 100)}%
             </Badge>
             {dangerNodes.length > 0 && (
-              <Badge variant="destructive">{dangerNodes.length} 个高危区域</Badge>
+              <Badge variant="destructive" className="text-xs px-3 py-1">{dangerNodes.length} 个高危区域</Badge>
             )}
           </div>
 
           <div className="grid gap-4 xl:grid-cols-2">
             {fitReport.coach_brief && (
-              <div className="rounded-2xl border border-primary/15 bg-primary/6 px-5 py-4">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.15em] text-primary/70 mb-2.5">你需要知道</div>
+              <div className="copilot-fade-up copilot-stagger-1 rounded-2xl border-2 border-primary/20 bg-gradient-to-br from-primary/8 to-primary/4 px-5 py-4 shadow-sm">
+                <div className="flex items-center gap-2 mb-2.5">
+                  <Eye size={14} className="text-primary/70" />
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.15em] text-primary/70">你需要知道</span>
+                </div>
                 <div className="text-[15px] leading-8 text-text/95">{fitReport.coach_brief}</div>
               </div>
             )}
             {status.risk_summary && (
-              <div className="rounded-2xl border border-red/20 bg-red/6 px-5 py-4">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.15em] text-red/70 mb-2.5">高危区域</div>
+              <div className="copilot-fade-up copilot-stagger-2 copilot-danger-glow rounded-2xl border-2 border-red/25 bg-gradient-to-br from-red/10 to-red/5 px-5 py-4">
+                <div className="flex items-center gap-2 mb-2.5">
+                  <ShieldAlert size={14} className="text-red/80" />
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.15em] text-red/80">高危区域</span>
+                </div>
                 <div className="text-[15px] leading-8 text-text/95">{status.risk_summary}</div>
               </div>
             )}
@@ -573,25 +606,30 @@ function PrepResultCards({ status }) {
 
       {/* ── 第二层：公司情报 ── */}
       {(companyReport.interviewer_mindset || companyReport.main_business || companyReport.how_to_reference) && (
-        <Card className="border-border/80">
+        <Card className="copilot-fade-up copilot-stagger-2 border-blue-500/15 bg-gradient-to-r from-blue-500/3 to-transparent">
           <CardContent className="p-5 md:p-6">
-            <SectionTitle icon={<Building2 size={17} className="text-blue-400" />} title="公司情报" />
-            <div className="mt-4 grid gap-5 xl:grid-cols-3">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/12 text-blue-400">
+                <Building2 size={16} />
+              </div>
+              <div className="font-semibold">公司情报</div>
+            </div>
+            <div className="grid gap-5 xl:grid-cols-3">
               {companyReport.main_business && (
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-dim/70 mb-2">主营业务</div>
+                <div className="rounded-xl border border-border/60 bg-card/60 px-4 py-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-400/70 mb-2">主营业务</div>
                   <div className="text-sm leading-7 text-text/90">{companyReport.main_business}</div>
                 </div>
               )}
               {companyReport.interviewer_mindset && (
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-dim/70 mb-2">面试官关注点</div>
+                <div className="rounded-xl border border-border/60 bg-card/60 px-4 py-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-400/70 mb-2">面试官关注点</div>
                   <div className="text-sm leading-7 text-text/90">{companyReport.interviewer_mindset}</div>
                 </div>
               )}
               {companyReport.how_to_reference && (
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-dim/70 mb-2">答题时怎么引用</div>
+                <div className="rounded-xl border border-border/60 bg-card/60 px-4 py-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-400/70 mb-2">答题时怎么引用</div>
                   <div className="text-sm leading-7 text-text/90">{companyReport.how_to_reference}</div>
                 </div>
               )}
@@ -602,19 +640,25 @@ function PrepResultCards({ status }) {
 
       {/* ── 第三层：细节支撑 ── */}
       <div className="grid gap-5 xl:grid-cols-2">
-        <Card className="border-border/80">
+        <Card className="copilot-fade-up copilot-stagger-3 border-green/15 bg-gradient-to-b from-green/3 to-transparent">
           <CardContent className="p-5 md:p-6">
-            <SectionTitle icon={<Target size={17} className="text-primary" />} title="匹配亮点 / 差距" />
-            <div className="mt-4 space-y-2">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green/12 text-green">
+                <Target size={16} />
+              </div>
+              <div className="font-semibold">匹配亮点 / 差距</div>
+            </div>
+            <div className="space-y-2">
               {highlights.map((h, i) => (
-                <div key={i} className="rounded-2xl border border-green/15 bg-green/8 px-4 py-3 text-sm leading-7">
+                <div key={i} className="copilot-fade-up rounded-2xl border border-green/20 bg-green/8 px-4 py-3 text-sm leading-7" style={{ animationDelay: `${i * 0.06}s` }}>
+                  <span className="text-green mr-2">✓</span>
                   {typeof h === "string" ? h : h.point}
                 </div>
               ))}
               {gaps.map((g, i) => (
-                <div key={i} className="rounded-2xl border border-amber-500/15 bg-amber-500/8 px-4 py-3 text-sm leading-7">
-                  <div>{typeof g === "string" ? g : g.point}</div>
-                  {g.mitigation && <div className="mt-1 text-[13px] text-dim">{g.mitigation}</div>}
+                <div key={i} className="copilot-fade-up rounded-2xl border border-amber-500/20 bg-amber-500/8 px-4 py-3 text-sm leading-7" style={{ animationDelay: `${(highlights.length + i) * 0.06}s` }}>
+                  <div><span className="text-amber-500 mr-2">△</span>{typeof g === "string" ? g : g.point}</div>
+                  {g.mitigation && <div className="mt-1 text-[13px] text-dim ml-5">{g.mitigation}</div>}
                 </div>
               ))}
               {highlights.length === 0 && gaps.length === 0 && (
@@ -624,22 +668,32 @@ function PrepResultCards({ status }) {
           </CardContent>
         </Card>
 
-        <Card className="border-border/80">
+        <Card className="copilot-fade-up copilot-stagger-4 border-red/15 bg-gradient-to-b from-red/3 to-transparent">
           <CardContent className="p-5 md:p-6">
-            <SectionTitle icon={<ShieldAlert size={17} className="text-red" />} title="高危路径详情" />
-            <div className="mt-4 space-y-3">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red/12 text-red">
+                <ShieldAlert size={16} />
+              </div>
+              <div className="font-semibold">高危路径详情</div>
+            </div>
+            <div className="space-y-3">
               {riskMap.length > 0 ? riskMap.map((r, i) => (
-                <div key={i} className="rounded-2xl border border-red/15 bg-red/8 px-4 py-3">
+                <div key={i} className={cn(
+                  "copilot-fade-up rounded-2xl border px-4 py-3",
+                  r.risk_level === "danger"
+                    ? "border-red/25 bg-red/10 copilot-danger-glow"
+                    : "border-amber-500/20 bg-amber-500/8"
+                )} style={{ animationDelay: `${i * 0.08}s` }}>
                   <div className="flex items-center gap-2 mb-1">
                     <Badge variant={r.risk_level === "danger" ? "destructive" : "secondary"} className="text-xs">{r.risk_level}</Badge>
                     <span className="text-sm font-semibold">{r.node_id}</span>
                   </div>
                   <div className="text-[13px] leading-6 text-dim">{r.reason}</div>
-                  {r.avoidance_strategy && <div className="mt-2 text-[13px] leading-6 text-amber-300/80">{r.avoidance_strategy}</div>}
+                  {r.avoidance_strategy && <div className="mt-2 text-[13px] leading-6 text-amber-300/80 font-medium">{r.avoidance_strategy}</div>}
                 </div>
               )) : (
-                <div className="rounded-2xl border border-green/15 bg-green/8 px-4 py-3 text-sm text-green">
-                  未发现高危路径，准备状态良好。
+                <div className="rounded-2xl border border-green/20 bg-green/8 px-4 py-3 text-sm text-green flex items-center gap-2">
+                  <CheckCircle2 size={15} /> 未发现高危路径，准备状态良好。
                 </div>
               )}
             </div>
@@ -649,12 +703,17 @@ function PrepResultCards({ status }) {
 
       {/* ── 第四层：JD 技术栈参考 ── */}
       {skills.length > 0 && (
-        <Card className="border-border/80">
+        <Card className="copilot-fade-up copilot-stagger-4 border-border/80">
           <CardContent className="p-5 md:p-6">
-            <SectionTitle icon={<Sparkles size={17} className="text-primary" />} title="JD 技术栈权重" />
-            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/12 text-primary">
+                <Sparkles size={16} />
+              </div>
+              <div className="font-semibold">JD 技术栈权重</div>
+            </div>
+            <div className="grid gap-3 lg:grid-cols-2">
               {skills.map((s, i) => (
-                <div key={i} className="rounded-2xl border border-border/75 bg-card/75 px-4 py-3">
+                <div key={i} className="copilot-fade-up rounded-2xl border border-border/75 bg-card/75 px-4 py-3 hover:border-primary/20 transition-colors" style={{ animationDelay: `${i * 0.04}s` }}>
                   <div className="flex items-center justify-between gap-3">
                     <div className="text-sm font-semibold">{s.skill}</div>
                     <Badge variant={s.weight === "core" ? "blue" : s.weight === "preferred" ? "secondary" : "outline"}>
@@ -718,20 +777,19 @@ function RealtimePhase({ prepId, onBack }) {
       case "risk_alert": setRiskAlert(msg); break;
       case "progress": setProgressMsg(msg.message); break;
       case "started": setStarted(true); setProgressMsg(""); setPerfMetrics({ warming: true }); break;
+      case "asr_final":
+        if (msg.text) setConversation((prev) => [...prev, { role: "hr", text: msg.text }]);
+        break;
       case "error": setProgressMsg(`Error: ${msg.message}`); break;
     }
   }, []);
 
   const {
-    connected, listening, asrText, lastFinal,
+    connected, listening, asrText,
     connect, startListening, stopListening, sendManualText, sendCandidateResponse, disconnect,
   } = useCopilotStream({ prepId, onUpdate: handleUpdate });
 
   useEffect(() => { connect(sessionId); }, [connect, sessionId]);
-
-  useEffect(() => {
-    if (lastFinal) setConversation((prev) => [...prev, { role: "hr", text: lastFinal }]);
-  }, [lastFinal]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -778,7 +836,8 @@ function RealtimePhase({ prepId, onBack }) {
         <div className="flex items-center gap-3">
           <Brain size={20} className="text-primary" />
           <span className="font-semibold text-sm">面试 Copilot</span>
-          <Badge variant={connected ? "green" : "destructive"} className="text-xs">
+          <Badge variant={connected ? "green" : "destructive"} className={cn("text-xs", connected && "copilot-connected-pulse")}>
+            <span className={cn("inline-block w-1.5 h-1.5 rounded-full mr-1.5", connected ? "bg-green copilot-breathe" : "bg-red")} />
             {connected ? "已连接" : "未连接"}
           </Badge>
           {/* LLM 性能指标 */}
@@ -819,7 +878,7 @@ function RealtimePhase({ prepId, onBack }) {
       </div>
 
       {progressMsg && (
-        <div className="px-5 py-2 bg-primary/5 text-sm text-primary flex items-center gap-2 shrink-0">
+        <div className="px-5 py-2.5 bg-gradient-to-r from-primary/8 to-primary/3 border-b border-primary/10 text-sm text-primary flex items-center gap-2 shrink-0">
           <Loader2 size={14} className="animate-spin" /> {progressMsg}
         </div>
       )}
@@ -856,8 +915,18 @@ function RealtimePhase({ prepId, onBack }) {
           <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
             {conversation.length === 0 && started && (
               <div className="flex flex-col items-center justify-center h-full text-dim text-sm">
-                <Mic size={28} className="mb-3 text-dim/30" />
-                <p>开始录音或手动输入 HR 的问题</p>
+                <div className="relative mb-4">
+                  <Mic size={32} className="text-primary/25" />
+                  <span className="absolute -top-1 -right-1 inline-block w-3 h-3 rounded-full bg-primary/30 copilot-breathe" />
+                </div>
+                <p className="font-medium">开始录音或手动输入 HR 的问题</p>
+                <p className="text-xs text-dim/40 mt-1">Copilot 将实时分析并生成回答建议</p>
+              </div>
+            )}
+            {conversation.length === 0 && !started && (
+              <div className="flex flex-col items-center justify-center h-full">
+                <Loader2 size={28} className="animate-spin text-primary/30 mb-3" />
+                <p className="text-sm text-dim/50">正在连接面试辅助引擎...</p>
               </div>
             )}
             {conversation.map((msg, i) => (
@@ -899,6 +968,16 @@ function RealtimePhase({ prepId, onBack }) {
   );
 }
 
+function PanelEmptyState({ text }) {
+  return (
+    <div className="space-y-2">
+      <div className="h-3 w-3/4 rounded-full bg-dim/8 copilot-shimmer-bg" />
+      <div className="h-3 w-1/2 rounded-full bg-dim/6 copilot-shimmer-bg" style={{ animationDelay: '0.3s' }} />
+      <p className="text-[12px] text-dim/35 mt-2">{text}</p>
+    </div>
+  );
+}
+
 function CopilotPanel({ update, riskAlert, streamingAnswer, answerLoading, monitorData }) {
   const recommendedPoints = update?.recommended_points || [];
   const children = update?.children || [];
@@ -906,28 +985,34 @@ function CopilotPanel({ update, riskAlert, streamingAnswer, answerLoading, monit
   const hasData = !!update;
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="p-4 space-y-3">
       {/* 回答评价 */}
-      <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-3">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-400/80 mb-1.5">回答评价</div>
+      <div className="copilot-fade-up rounded-2xl border-2 border-cyan-500/25 bg-gradient-to-br from-cyan-500/10 to-cyan-500/3 p-3.5">
+        <div className="flex items-center gap-1.5 mb-2">
+          <Eye size={13} className="text-cyan-400" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-400/90">回答评价</span>
+        </div>
         {monitorData?.last_answer_feedback ? (
           <>
-            <p className="text-sm leading-6 text-text/80">{monitorData.last_answer_feedback}</p>
+            <p className="text-sm leading-6 text-text/85">{monitorData.last_answer_feedback}</p>
             {monitorData.uncovered_topics?.length > 0 && (
-              <div className="mt-2 pt-2 border-t border-cyan-500/10">
+              <div className="mt-2 pt-2 border-t border-cyan-500/15">
                 <span className="text-[11px] text-dim/60">未覆盖：</span>
                 <span className="text-[12px] text-dim/80">{monitorData.uncovered_topics.join("、")}</span>
               </div>
             )}
           </>
         ) : (
-          <p className="text-sm text-dim/40">候选人回答后自动评价</p>
+          <PanelEmptyState text="候选人回答后自动评价" />
         )}
       </div>
 
       {/* 当前考察 */}
-      <div className="rounded-2xl border border-border/75 bg-card/75 p-4">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-dim/80 mb-2">当前考察</div>
+      <div className="copilot-fade-up copilot-stagger-1 rounded-2xl border border-violet-500/20 bg-gradient-to-br from-violet-500/8 to-transparent p-4">
+        <div className="flex items-center gap-1.5 mb-2">
+          <Target size={13} className="text-violet-400" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-400/80">当前考察</span>
+        </div>
         {hasData ? (
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="blue">{update.intent || "unknown"}</Badge>
@@ -937,53 +1022,67 @@ function CopilotPanel({ update, riskAlert, streamingAnswer, answerLoading, monit
             )}
           </div>
         ) : (
-          <p className="text-sm text-dim/40">等待 HR 提问...</p>
+          <PanelEmptyState text="等待 HR 提问..." />
         )}
       </div>
 
       {/* 回答要点 */}
-      <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/80 mb-3">回答要点</div>
+      <div className="copilot-fade-up copilot-stagger-2 rounded-2xl border-2 border-primary/25 bg-gradient-to-br from-primary/10 to-primary/3 p-4">
+        <div className="flex items-center gap-1.5 mb-3">
+          <Sparkles size={13} className="text-primary" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/90">回答要点</span>
+        </div>
         {recommendedPoints.length > 0 ? (
           <>
             <ul className="space-y-1.5">
               {recommendedPoints.map((point, i) => (
                 <li key={i} className="text-sm leading-6 flex items-start gap-2">
-                  <span className="text-primary/50 mt-1.5 shrink-0">•</span>
+                  <span className="text-primary/60 mt-1.5 shrink-0">•</span>
                   {point}
                 </li>
               ))}
             </ul>
             {prepHint?.redirect_suggestion && (
-              <div className="mt-3 pt-3 border-t border-primary/10 text-[12px] text-primary/70 leading-5">
+              <div className="mt-3 pt-3 border-t border-primary/15 text-[12px] text-primary/70 leading-5">
                 <span className="font-semibold">引导方向：</span>{prepHint.redirect_suggestion}
               </div>
             )}
           </>
         ) : (
-          <p className="text-sm text-dim/40">策略树匹配后瞬间出现</p>
+          <PanelEmptyState text="策略树匹配后瞬间出现" />
         )}
       </div>
 
       {/* 参考答案 */}
-      <div className="rounded-2xl border border-green/20 bg-green/5 p-4">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-green/80 mb-3">参考答案</div>
+      <div className="copilot-fade-up copilot-stagger-3 rounded-2xl border-2 border-green/25 bg-gradient-to-br from-green/10 to-green/3 p-4">
+        <div className="flex items-center gap-1.5 mb-3">
+          <CheckCircle2 size={13} className="text-green" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-green/90">参考答案</span>
+        </div>
         {answerLoading && !streamingAnswer ? (
-          <p className="text-sm text-dim/60 animate-pulse">正在生成...</p>
+          <div className="space-y-2">
+            <div className="h-3 w-full rounded-full bg-green/10 copilot-shimmer-bg" />
+            <div className="h-3 w-4/5 rounded-full bg-green/8 copilot-shimmer-bg" style={{ animationDelay: '0.2s' }} />
+            <div className="h-3 w-3/5 rounded-full bg-green/6 copilot-shimmer-bg" style={{ animationDelay: '0.4s' }} />
+            <p className="text-[12px] text-green/50 mt-1">AI 正在生成...</p>
+          </div>
         ) : streamingAnswer ? (
-          <p className="text-sm leading-7 text-text/85">{streamingAnswer}</p>
+          <p className="text-sm leading-7 text-text/88">{streamingAnswer}</p>
         ) : (
-          <p className="text-sm text-dim/40">Answer Coach 流式生成</p>
+          <PanelEmptyState text="Answer Coach 流式生成" />
         )}
       </div>
 
       {/* 可能追问 */}
-      <div className="rounded-2xl border border-border/75 bg-card/75 p-4">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-dim/80 mb-3">可能追问</div>
+      <div className="copilot-fade-up copilot-stagger-4 rounded-2xl border border-amber-500/15 bg-gradient-to-br from-amber-500/6 to-transparent p-4">
+        <div className="flex items-center gap-1.5 mb-3">
+          <ChevronRight size={13} className="text-amber-400" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400/80">可能追问</span>
+        </div>
         {children.length > 0 ? (
           <div className="space-y-2.5">
             {children.map((c, i) => (
-              <div key={i} className="rounded-xl border border-border/60 bg-background/60 px-3 py-2.5 text-sm">
+              <div key={i} className="rounded-xl border border-amber-500/15 bg-amber-500/5 px-3 py-2.5 text-sm">
                 <div className="font-medium">{c.topic}</div>
                 {c.question && (
                   <div className="mt-1 text-[12px] text-dim leading-5">"{c.question}"</div>
@@ -992,13 +1091,13 @@ function CopilotPanel({ update, riskAlert, streamingAnswer, answerLoading, monit
             ))}
           </div>
         ) : (
-          <p className="text-sm text-dim/40">策略树子节点预测</p>
+          <PanelEmptyState text="策略树子节点预测" />
         )}
       </div>
 
       {/* 风险提示 */}
       {riskAlert && (
-        <div className="rounded-2xl border border-amber-500/25 bg-amber-500/8 p-4">
+        <div className="copilot-fade-up copilot-danger-glow rounded-2xl border-2 border-amber-500/30 bg-gradient-to-br from-amber-500/12 to-amber-500/4 p-4">
           <div className="flex items-center gap-2 mb-2">
             <AlertTriangle size={14} className="text-amber-400" />
             <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-400">注意</span>
@@ -1057,25 +1156,6 @@ function InfoRow({ label, value }) {
     </div>
   );
 }
-
-function ResultTag({ label, value }) {
-  return (
-    <div className="rounded-2xl border border-border/75 bg-card/78 px-3 py-2.5">
-      <div className="text-[11px] uppercase tracking-[0.16em] text-dim/80">{label}</div>
-      <div className="mt-1 text-lg font-semibold tabular-nums">{value}</div>
-    </div>
-  );
-}
-
-function SectionTitle({ icon, title }) {
-  return (
-    <div className="flex items-center gap-2">
-      {icon}
-      <div className="font-semibold">{title}</div>
-    </div>
-  );
-}
-
 
 // ══════════════════════════════════════════════════════════════
 // Main Export — 路由状态机
