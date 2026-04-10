@@ -226,6 +226,8 @@ TAVILY_API_KEY=
 
 不填 `COPILOT_*` 时会回退到主 LLM；`DASHSCOPE_API_KEY` 同时承担 Copilot 的**实时语音识别**（qwen3-asr-flash-realtime）和**录音文件批量转写**两个用途，不配置时 Copilot 只能手动输入 HR 的问题。
 
+`DASHSCOPE_API_KEY` 来自阿里云百炼（DashScope），可以在阿里云百炼控制台注册后获取：<https://bailian.console.aliyun.com/>。新用户通常有免费额度，足够先把实时语音识别和录音转写跑通。
+
 `TAVILY_API_KEY` 可以在 Tavily 官网注册后获取：<https://tavily.com/>。免费计划每月提供 `1,000 credits`，足够先把联网搜索跑通。
 
 如果你要启用 Copilot **自动区分 HR 与候选人音色**（基于腾讯云 VPR 声纹识别），还可以补全以下可选项：
@@ -236,7 +238,7 @@ TENCENT_SECRET_KEY=
 TENCENT_VPR_APP_ID=
 ```
 
-不配置时 Copilot 依然可用，只是需要手动点按钮切换"HR / You"角色。
+`TENCENT_SECRET_ID` 和 `TENCENT_SECRET_KEY` 可以在腾讯云访问管理控制台创建：<https://console.cloud.tencent.com/cam/capi>；`TENCENT_VPR_APP_ID` 需要先在智聆口语评测/声纹识别控制台开通 VPR 服务后获取：<https://console.cloud.tencent.com/vpr>。不配置时 Copilot 依然可用，只是需要手动点按钮切换"HR / You"角色。
 
 如果你要启用录音上传转写，还需要继续补全这些可选项：
 
