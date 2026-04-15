@@ -1,5 +1,7 @@
 """FastAPI app factory."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,15 +21,20 @@ from backend.routers import (
 from backend.startup import preload_models
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    preload_models()
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="TechSpar", version="0.2.0")
+    app = FastAPI(title="TechSpar", version="0.2.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_event_handler("startup", preload_models)
 
     app.include_router(auth.router)
     app.include_router(resume.router)
