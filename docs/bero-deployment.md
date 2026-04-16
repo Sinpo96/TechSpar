@@ -21,6 +21,14 @@ Recommended on `bero`:
 
 This keeps the API local-only, while allowing another tailnet node (for example `geelinx-gb`) to reverse proxy the frontend over Tailscale.
 
+For the main LLM, prefer the internal Sub2API tailnet endpoint from `bero`:
+
+```env
+API_BASE=http://100.120.96.64:18080/v1
+```
+
+That avoids routing TechSpar's server-side traffic through the public edge when both machines already share Tailscale.
+
 The frontend container already proxies both `/api/` and `/ws/` to backend inside the compose network.
 So the upstream reverse proxy only needs to forward the website itself to frontend.
 
