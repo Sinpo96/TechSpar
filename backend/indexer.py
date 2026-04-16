@@ -1,7 +1,7 @@
 """LlamaIndex indexing for resume and interview knowledge base."""
 import json
-from pathlib import Path
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from llama_index.core import (
     SimpleDirectoryReader,
     VectorStoreIndex,
@@ -11,7 +11,8 @@ from llama_index.core import (
 )
 
 from backend.config import settings
-from backend.llm_provider import get_llama_llm, get_embedding
+from backend.llm_provider import get_llama_llm, get_embedding, get_langchain_llm
+from backend.reranker import rerank_documents
 
 # In-memory index cache keyed by (user_id, topic_or_resume)
 _index_cache: dict[tuple[str, str], "VectorStoreIndex"] = {}
@@ -114,25 +115,62 @@ def build_topic_index(topic: str, user_id: str, force_rebuild: bool = False) -> 
     return index
 
 
-def query_resume(question: str, user_id: str, top_k: int = 3) -> str:
-    """Query the resume index."""
+def _dedupe_texts(texts: list[str]) -> list[str]:
+    seen = set()
+    out = []
+    for text in texts:
+        t = (text or "").strip()
+        if not t:
+            continue
+        key = t[:300]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
+
+
+def _retrieve_reranked_chunks(index: VectorStoreIndex, question: str, top_k: int, candidate_k: int | None = None) -> list[str]:
+    initial_k = max(candidate_k or (top_k * 3), top_k)
+    retriever = index.as_retriever(similarity_top_k=initial_k)
+    nodes = retriever.retrieve(question)
+    chunks = _dedupe_texts([node.get_content() for node in nodes])
+    return rerank_documents(question, chunks, top_n=top_k)
+
+
+def _synthesize_from_chunks(question: str, chunks: list[str]) -> str:
+    if not chunks:
+        return ""
+    context = "\n\n---\n\n".join(chunks)[:12000]
+    llm = get_langchain_llm()
+    response = llm.invoke([
+        SystemMessage(content=(
+            "你是内部检索总结器。基于给定资料回答问题，只用资料中能支持的信息，"
+            "不要虚构，不要输出与问题无关的铺垫。"
+        )),
+        HumanMessage(content=f"问题：{question}\n\n资料：\n{context}\n\n请直接给出简洁、信息密集的回答。"),
+    ])
+    return str(response.content).strip()
+
+
+def retrieve_resume_context(question: str, user_id: str, top_k: int = 4) -> list[str]:
     index = build_resume_index(user_id)
-    engine = index.as_query_engine(similarity_top_k=top_k)
-    response = engine.query(question)
-    return str(response)
+    return _retrieve_reranked_chunks(index, question, top_k=top_k)
+
+
+def query_resume(question: str, user_id: str, top_k: int = 3) -> str:
+    """Query the resume index with vector retrieval + optional reranking."""
+    chunks = retrieve_resume_context(question, user_id, top_k=top_k)
+    return _synthesize_from_chunks(question, chunks)
 
 
 def query_topic(topic: str, question: str, user_id: str, top_k: int = 5) -> str:
-    """Query a topic knowledge base."""
-    index = build_topic_index(topic, user_id)
-    engine = index.as_query_engine(similarity_top_k=top_k)
-    response = engine.query(question)
-    return str(response)
+    """Query a topic knowledge base with vector retrieval + optional reranking."""
+    chunks = retrieve_topic_context(topic, question, user_id, top_k=top_k)
+    return _synthesize_from_chunks(question, chunks)
 
 
 def retrieve_topic_context(topic: str, question: str, user_id: str, top_k: int = 5) -> list[str]:
     """Retrieve raw text chunks from topic index (for answer evaluation)."""
     index = build_topic_index(topic, user_id)
-    retriever = index.as_retriever(similarity_top_k=top_k)
-    nodes = retriever.retrieve(question)
-    return [node.get_content() for node in nodes]
+    return _retrieve_reranked_chunks(index, question, top_k=top_k)

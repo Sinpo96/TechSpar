@@ -36,13 +36,15 @@ Recommended `.env` values:
 EMBEDDING_BACKEND=api
 EMBEDDING_API_BASE=http://100.84.168.72:18095/v1
 EMBEDDING_API_MODEL=BAAI/bge-m3
+RERANK_API_BASE=http://100.84.168.72:18096/v1
+RERANK_API_MODEL=BAAI/bge-reranker-v2-m3
 ```
 
 This matches the same host-shape used by the outer reverse proxy path (`geelinx-gb -> bero over Tailscale`).
 
 ## Notes
 
-- reranker is not wired into the current upstream retrieval path yet
+- current repo can use the local reranker when `RERANK_API_BASE` is configured
 - microphone / recording features should sit behind HTTPS on a real domain
 - `/ws/` websocket proxying is added in frontend nginx for Copilot realtime features
 - `.env.bero.example` is provided as a deployment template for this host shape

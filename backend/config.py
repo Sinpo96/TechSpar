@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     local_embedding_path: str = ""
     embedding_model: str = ""  # deprecated fallback for EMBEDDING_MODEL
 
+    # Optional reranker (OpenAI-compatible /v1 style wrapper around /rerank)
+    rerank_api_base: str = ""
+    rerank_api_key: str = ""
+    rerank_api_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_timeout_seconds: float = 20.0
+
     # DashScope ASR (speech-to-text, batch transcription)
     dashscope_api_key: str = ""
 
@@ -114,6 +120,13 @@ class Settings(BaseSettings):
 
     def embedding_api_model_name(self) -> str:
         return self.embedding_api_model or self.embedding_model or DEFAULT_EMBEDDING_MODEL
+
+    @property
+    def effective_rerank_api_key(self) -> str:
+        return self.rerank_api_key or self.embedding_api_key
+
+    def rerank_enabled(self) -> bool:
+        return bool((self.rerank_api_base or "").strip())
 
     def local_embedding_model_name(self) -> str:
         return self.local_embedding_model or self.embedding_model or DEFAULT_EMBEDDING_MODEL
