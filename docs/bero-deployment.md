@@ -28,20 +28,17 @@ So the upstream reverse proxy only needs to forward the website itself to fronte
 
 The backend container cannot use host `127.0.0.1` directly.
 
-So compose adds:
+The practical fix on `bero` is to expose the embedding service on the host Tailscale IP and let the backend call that address directly.
 
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-```
-
-Then `.env` should point embeddings to:
+Recommended `.env` values:
 
 ```env
 EMBEDDING_BACKEND=api
-EMBEDDING_API_BASE=http://host.docker.internal:18095/v1
+EMBEDDING_API_BASE=http://100.84.168.72:18095/v1
 EMBEDDING_API_MODEL=BAAI/bge-m3
 ```
+
+This matches the same host-shape used by the outer reverse proxy path (`geelinx-gb -> bero over Tailscale`).
 
 ## Notes
 
