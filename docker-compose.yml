@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     ports:
-      - "127.0.0.1:18000:8000"
+      - "${BACKEND_BIND_IP:-127.0.0.1}:18000:8000"
     volumes:
       - ./data:/app/data
     env_file:
@@ -18,7 +18,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:13080:80"
+      - "${FRONTEND_BIND_IP:-127.0.0.1}:13080:80"
     depends_on:
       - backend
     restart: unless-stopped

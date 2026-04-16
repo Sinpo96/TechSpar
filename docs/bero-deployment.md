@@ -9,15 +9,20 @@ This repo can run on `bero` with a small adaptation layer:
 
 ## Port layout
 
-`docker-compose.yml` is adjusted to bind only on localhost:
+`docker-compose.yml` now supports bind IP overrides:
 
-- frontend: `127.0.0.1:13080 -> container:80`
+- `FRONTEND_BIND_IP` for `13080`
+- `BACKEND_BIND_IP` for `18000`
+
+Recommended on `bero`:
+
+- frontend: `100.84.168.72:13080 -> container:80`
 - backend: `127.0.0.1:18000 -> container:8000`
 
-OpenResty can then reverse proxy:
+This keeps the API local-only, while allowing another tailnet node (for example `geelinx-gb`) to reverse proxy the frontend over Tailscale.
 
-- `/` -> `http://127.0.0.1:13080`
-- optional direct API proxy is not required because frontend nginx already proxies `/api/` to backend inside the compose network.
+The frontend container already proxies both `/api/` and `/ws/` to backend inside the compose network.
+So the upstream reverse proxy only needs to forward the website itself to frontend.
 
 ## Embedding wiring
 
@@ -41,5 +46,6 @@ EMBEDDING_API_MODEL=BAAI/bge-m3
 ## Notes
 
 - reranker is not wired into the current upstream retrieval path yet
-- microphone / recording features should eventually sit behind HTTPS on a real domain
+- microphone / recording features should sit behind HTTPS on a real domain
+- `/ws/` websocket proxying is added in frontend nginx for Copilot realtime features
 - `.env.bero.example` is provided as a deployment template for this host shape
